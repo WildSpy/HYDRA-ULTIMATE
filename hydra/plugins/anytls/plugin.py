@@ -12,7 +12,7 @@ from hydra.plugins.base import (
     BasePlugin, PluginMeta, PluginStatus, PluginCategory, ConfigFragment,
 )
 from hydra.core.state import AppState, User
-from hydra.utils.crypto import derive_key
+from hydra.utils.crypto import derive_key, derive_hex_key
 from hydra.utils.net import public_ip
 
 DEFAULT_PADDING_SCHEME = [
@@ -378,7 +378,7 @@ class AnyTLSPlugin(BasePlugin):
 
     @staticmethod
     def _derive_password(uuid: str) -> str:
-        return derive_key("anytls-pass", uuid)
+        return derive_hex_key("anytls-pass", uuid)
 
     def _resolve_certs(self, domain: str, ps) -> tuple[str, str]:
         """Ищет существующий TLS-сертификат для домена.
