@@ -20,10 +20,33 @@ def apply_config(state: AppState) -> bool:
         nft.apply_tproxy(fragments, state.network.tproxy_port)
     except Exception:
         pass
+
+    from hydra.core.sni_router import needs_mux, stop as stop_mux, rebuild as rebuild_mux
+    import socket
+    import time
+
+    mux_active = needs_mux(state)
+
+    # Если мультиплексор не нужен, гасим HAProxy ДО перезапуска sing-box, чтобы освободить порт 443
+    if not mux_active:
+        stop_mux()
+        for _ in range(10):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(('127.0.0.1', 443)) != 0:
+                    break
+            time.sleep(0.3)
+
     res = singbox.reload()
-    # Пересобрать SNI-мультиплексор если нужно
-    from hydra.core.sni_router import rebuild
-    rebuild(state)
+
+    # Если мультиплексор нужен, ждем пока sing-box освободит порт 443, и только тогда запускаем HAProxy
+    if mux_active:
+        for _ in range(10):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(('127.0.0.1', 443)) != 0:
+                    break
+            time.sleep(0.3)
+        rebuild_mux(state)
+
     return res
 
 
