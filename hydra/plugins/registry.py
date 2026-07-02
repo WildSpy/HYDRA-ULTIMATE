@@ -12,9 +12,7 @@ from hydra.plugins.wdtt.plugin import WdttPlugin
 from hydra.plugins.dnscrypt.plugin import DNSCryptPlugin
 from hydra.plugins.warp.plugin import WarpPlugin
 from hydra.plugins.slipgate.plugin import SlipGatePlugin
-from hydra.plugins.porthopping.plugin import PortHoppingPlugin
 from hydra.plugins.fail2ban.plugin import Fail2banPlugin
-from hydra.plugins.geoip.plugin import GeoIPPlugin
 from hydra.plugins.honeypot.plugin import HoneypotPlugin
 from hydra.plugins.ipban.plugin import IPBanPlugin
 from hydra.core.state import AppState
@@ -28,9 +26,7 @@ _PLUGINS: list[BasePlugin] = [
     DNSCryptPlugin(),
     WarpPlugin(),
     SlipGatePlugin(),
-    PortHoppingPlugin(),
     Fail2banPlugin(),
-    GeoIPPlugin(),
     HoneypotPlugin(),
     IPBanPlugin(),
 ]

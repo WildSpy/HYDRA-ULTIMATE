@@ -330,13 +330,23 @@ def main_menu(state: AppState):
 
         sb_ok = singbox_installed() and is_running()
         plugins = status_all()
-        active_p = sum(1 for s in plugins.values() if s["running"])
-        total_p = len(plugins)
+
+        active_t = sum(1 for p in transports() if plugins.get(p.meta.name, {}).get("running"))
+        total_t = len(transports())
+
+        active_e = sum(1 for p in enhancements() if plugins.get(p.meta.name, {}).get("running"))
+        total_e = len(enhancements())
+
+        active_s = sum(1 for p in sec_plugins() if plugins.get(p.meta.name, {}).get("running"))
+        total_s = len(sec_plugins())
+
         u_active = sum(1 for u in state.users if not u.blocked)
 
         lines = [
             kv("Sing-Box:", f"{_ok(sb_ok)}  {singbox_version() or 'не установлен'}"),
-            kv("Протоколов:", f"{GREEN}{active_p}{NC}/{total_p} запущено"),
+            kv("Транспорты:", f"{GREEN}{active_t}{NC}/{total_t} активны"),
+            kv("Службы сети:", f"{GREEN}{active_e}{NC}/{total_e} активны"),
+            kv("Безопасность:", f"{GREEN}{active_s}{NC}/{total_s} активны"),
             kv("Пользователей:", f"{GREEN if u_active else YELLOW}{u_active}{NC} из {len(state.users)}"),
         ]
         lines += _sys_info(state)
@@ -344,12 +354,13 @@ def main_menu(state: AppState):
 
         choice = menu(
             [
-                ("1", "⚙️  Ядро и система",     f"Установка Sing-Box, зависимости, применить конфиг"),
-                ("2", "🧩 Протоколы",           f"NaiveProxy, Mieru, AmneziaWG, DNSCrypt, WARP  [{active_p}/{total_p}]"),
+                ("1", "⚙️  Ядро и система",     "Установка Sing-Box, зависимости, применить конфиг"),
+                ("2", "🧩 Протоколы",           f"Транспорты (Naive, AmneziaWG, Mieru...)  [{active_t}/{total_t}]"),
                 ("3", "👥 Пользователи",        f"Создание, лимиты, TTL, подписки  [{u_active} активно]"),
-                ("4", "🤖 Telegram-боты",       f"Admin-панель и клиентский бот"),
-                ("5", "📊 Мониторинг",          f"Трафик, статус, sync-агент, логи"),
-                ("6", "🔒 Безопасность",       f"GeoIP, fail2ban, honeypot, IPBan"),
+                ("4", "🤖 Telegram-боты",       "Admin-панель и клиентский бот"),
+                ("5", "📊 Мониторинг",          "Трафик, статус, sync-агент, логи"),
+                ("6", "🔒 Безопасность",        f"Fail2ban, Honeypot, IPBan  [{active_s}/{total_s}]"),
+                ("7", "🌐 Сетевые службы",      f"DNSCrypt, WARP (DNS и маршрутизация)  [{active_e}/{total_e}]"),
                 ("0", "🚪 Выход", ""),
             ],
             "HYDRA MULTI-PROXY MANAGER",
@@ -370,6 +381,8 @@ def main_menu(state: AppState):
             menu_monitoring(state)
         elif choice == "6":
             menu_security(state)
+        elif choice == "7":
+            menu_network_services(state)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -452,31 +465,13 @@ def menu_protocols(state: AppState):
             st_txt = "вкл" if s.get("enabled") else "выкл"
             transport_lines.append(f"  {ico} {p.meta.name:<14} {DIM}{st_txt:>4}{NC}  порт{port}")
 
-        enhancement_lines = []
-        for p in enhancements():
-            s = st.get(p.meta.name, {})
-            ico = f"{GREEN}●{NC}" if s.get("running") else (f"{YELLOW}●{NC}" if s.get("installed") else f"{DIM}●{NC}")
-            port = f":{s['port']}" if s.get("port") else ""
-            enhancement_lines.append(f"  {ico} {p.meta.name:<14} {DIM}{'вкл' if s.get('enabled') else 'выкл':>4}{NC}  порт{port}")
-
-        security_p_lines = []
-        for p in sec_plugins():
-            s = st.get(p.meta.name, {})
-            ico = f"{GREEN}●{NC}" if s.get("running") else (f"{YELLOW}●{NC}" if s.get("installed") else f"{DIM}●{NC}")
-            security_p_lines.append(f"  {ico} {p.meta.name:<14} {DIM}{'вкл' if s.get('enabled') else 'выкл':>4}{NC}")
-
         lines = [
             f"  {BOLD}Транспорты:{NC}",
             *transport_lines,
-            "",
-            f"  {BOLD}Улучшения:{NC}",
-            *enhancement_lines,
         ]
-        if security_p_lines:
-            lines += ["", f"  {BOLD}Безопасность:{NC}", *security_p_lines]
         panel("Протоколы", lines)
 
-        all_p = transports() + enhancements() + sec_plugins()
+        all_p = transports()
         opts: list[tuple[str, str, str]] = []
         for i, p in enumerate(all_p, 1):
             s = st.get(p.meta.name, {})
@@ -487,6 +482,48 @@ def menu_protocols(state: AppState):
         opts += [("-", "", ""), ("0", "↩ Назад", "")]
 
         choice = menu(opts, "УПРАВЛЕНИЕ ПРОТОКОЛАМИ")
+        if choice == "0":
+            return
+        else:
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(all_p):
+                    p = all_p[idx]
+                    menu_plugin(state, p)
+            except ValueError:
+                pass
+
+
+def menu_network_services(state: AppState):
+    while True:
+        clear()
+        st = status_all()
+
+        enhancement_lines = []
+        for p in enhancements():
+            s = st.get(p.meta.name, {})
+            ico = f"{GREEN}●{NC}" if s.get("running") else (f"{YELLOW}●{NC}" if s.get("installed") else f"{DIM}●{NC}")
+            port = f":{s['port']}" if s.get("port") else ""
+            st_txt = "вкл" if s.get("enabled") else "выкл"
+            enhancement_lines.append(f"  {ico} {p.meta.name:<14} {DIM}{st_txt:>4}{NC}  порт{port}")
+
+        lines = [
+            f"  {BOLD}Сетевые службы (DNS / Маршрутизация):{NC}",
+            *enhancement_lines,
+        ]
+        panel("Сетевые службы", lines)
+
+        all_p = enhancements()
+        opts: list[tuple[str, str, str]] = []
+        for i, p in enumerate(all_p, 1):
+            s = st.get(p.meta.name, {})
+            ico = f"{GREEN}✓{NC}" if s.get("running") else (f"{YELLOW}⚠{NC}" if s.get("installed") else f"{RED}✗{NC}")
+            opts.append((str(i),
+                         f"{ico} {p.meta.name}",
+                         f"{p.meta.description}"))
+        opts += [("-", "", ""), ("0", "↩ Назад", "")]
+
+        choice = menu(opts, "СЕТЕВЫЕ СЛУЖБЫ")
         if choice == "0":
             return
         else:
@@ -1108,74 +1145,65 @@ WantedBy=timers.target
 # ═════════════════════════════════════════════════════════════════════════════
 
 def menu_security(state: AppState):
+    from hydra.plugins.registry import get as get_plugin
     while True:
         clear()
-        sec = state.security
         st = status_all()
 
+        security_p_lines = []
+        p_f2b = get_plugin("fail2ban")
+        p_hp = get_plugin("honeypot")
+        p_ipb = get_plugin("ipban")
+        
+        plugins_list = [p for p in [p_f2b, p_hp, p_ipb] if p is not None]
+
+        for p in plugins_list:
+            s = st.get(p.meta.name, {})
+            ico = f"{GREEN}●{NC}" if s.get("running") else (f"{YELLOW}●{NC}" if s.get("installed") else f"{DIM}●{NC}")
+            st_txt = "вкл" if s.get("enabled") else "выкл"
+            security_p_lines.append(f"  {ico} {p.meta.name:<14} {DIM}{st_txt:>4}{NC}")
+
         panel("Безопасность", [
-            kv("GeoIP:", f"{_ok(sec.geoip_block_enabled)}  (РФ, порт {sec.geoip_port})"),
-            kv("Fail2ban:", _ok(sec.fail2ban_enabled)),
-            kv("Honeypot:", _ok(sec.honeypot_enabled)),
-            kv("IPBan:", _ok(st.get("ipban", {}).get("enabled", False))),
+            f"  {BOLD}Плагины безопасности:{NC}",
+            *security_p_lines
         ])
 
-        choice = menu(
-            [
-                ("1", f"🌍 GeoIP         [{_ok(sec.geoip_block_enabled)}]", "Блокировка РФ по ipset"),
-                ("2", f"🔒 Fail2ban     [{_ok(sec.fail2ban_enabled)}]", "Защита от брутфорса"),
-                ("3", f"🪤 Honeypot      [{_ok(sec.honeypot_enabled)}]", "Ловушка для сканеров"),
-                ("4", f"🚫 IPBan         [{_ok(st.get('ipban', {}).get('enabled', False))}]", "Блокировка по IP"),
-                ("-", "", ""),
-                ("A", "✅ Включить всё", "GeoIP + Fail2ban + Honeypot + IPBan"),
-                ("B", "❌ Выключить всё", ""),
-                ("0", "↩ Назад", ""),
-            ],
-            "БЕЗОПАСНОСТЬ",
-        )
+        opts: list[tuple[str, str, str]] = []
+        for i, p in enumerate(plugins_list, 1):
+            s = st.get(p.meta.name, {})
+            ico = f"{GREEN}✓{NC}" if s.get("running") else (f"{YELLOW}⚠{NC}" if s.get("installed") else f"{RED}✗{NC}")
+            opts.append((str(i),
+                         f"{ico} {p.meta.name}",
+                         f"{p.meta.description}"))
+        
+        opts += [
+            ("-", "", ""),
+            ("A", "✅ Включить всё", "Fail2ban + Honeypot + IPBan"),
+            ("B", "❌ Выключить всё", ""),
+            ("0", "↩ Назад", "")
+        ]
 
+        choice = menu(opts, "БЕЗОПАСНОСТЬ")
         if choice == "0":
             return
-        elif choice == "1":
-            sec.geoip_block_enabled = not sec.geoip_block_enabled
-            save_state(state)
-            _toggle_security_plugin(state, "geoip")
-            success(f"GeoIP {'включён' if sec.geoip_block_enabled else 'выключен'}")
+        elif choice == "A":
+            for p in plugins_list:
+                _toggle_security_plugin(state, p.meta.name, force_enable=True)
+            success("Все службы безопасности включены")
             prompt("Нажмите Enter")
-        elif choice == "2":
-            sec.fail2ban_enabled = not sec.fail2ban_enabled
-            save_state(state)
-            _toggle_security_plugin(state, "fail2ban")
-            success(f"Fail2ban {'включён' if sec.fail2ban_enabled else 'выключен'}")
+        elif choice == "B":
+            for p in plugins_list:
+                _toggle_security_plugin(state, p.meta.name, force_enable=False)
+            success("Все службы безопасности выключены")
             prompt("Нажмите Enter")
-        elif choice == "3":
-            sec.honeypot_enabled = not sec.honeypot_enabled
-            save_state(state)
-            _toggle_security_plugin(state, "honeypot")
-            success(f"Honeypot {'включён' if sec.honeypot_enabled else 'выключен'}")
-            prompt("Нажмите Enter")
-        elif choice == "4":
-            _toggle_security_plugin(state, "ipban")
-            success("IPBan переключён")
-            prompt("Нажмите Enter")
-        elif choice.upper() == "A":
-            sec.geoip_block_enabled = True
-            sec.fail2ban_enabled = True
-            sec.honeypot_enabled = True
-            save_state(state)
-            for name in ("geoip", "fail2ban", "honeypot", "ipban"):
-                _toggle_security_plugin(state, name, force_enable=True)
-            success("Всё включено")
-            prompt("Нажмите Enter")
-        elif choice.upper() == "B":
-            sec.geoip_block_enabled = False
-            sec.fail2ban_enabled = False
-            sec.honeypot_enabled = False
-            save_state(state)
-            for name in ("geoip", "fail2ban", "honeypot", "ipban"):
-                _toggle_security_plugin(state, name, force_enable=False)
-            success("Всё выключено")
-            prompt("Нажмите Enter")
+        else:
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(plugins_list):
+                    p = plugins_list[idx]
+                    menu_plugin(state, p)
+            except ValueError:
+                pass
 
 
 def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | None = None):
@@ -1186,21 +1214,32 @@ def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | Non
         return
 
     proto = get_protocol(state, name)
+    enabled_val = False
     if force_enable is True:
         p.on_enable(state)
         if proto:
             proto.enabled = True
+        enabled_val = True
     elif force_enable is False:
         p.on_disable(state)
         if proto:
             proto.enabled = False
+        enabled_val = False
     else:
         # toggle
         if proto and proto.enabled:
             p.on_disable(state)
             proto.enabled = False
+            enabled_val = False
         else:
             p.on_enable(state)
             if proto:
                 proto.enabled = True
+            enabled_val = True
+            
+    if name == "fail2ban":
+        state.security.fail2ban_enabled = enabled_val
+    elif name == "honeypot":
+        state.security.honeypot_enabled = enabled_val
+        
     save_state(state)

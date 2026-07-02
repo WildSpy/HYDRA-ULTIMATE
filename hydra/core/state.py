@@ -76,8 +76,6 @@ class NetworkConfig:
 @dataclass
 class SecurityConfig:
     """Настройки безопасности."""
-    geoip_block_enabled: bool = False
-    geoip_port: int = 443
     fail2ban_enabled: bool = False
     honeypot_enabled: bool = False
 

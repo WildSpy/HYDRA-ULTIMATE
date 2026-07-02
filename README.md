@@ -25,10 +25,10 @@
                           │                          │
                     Cloudflare                  Интернет
                           │
-                    ┌─────┴──────┬──────────┬──────────────┐
-                    ↓            ↓          ↓              ↓
-              DNSCrypt:5300  GeoIP     Fail2ban        IPBan/Honeypot
-              (DNS шифрование) (RU блок) (бан по логам)  (ручной бан)
+                    ┌─────┴──────┬─────────────────────────┐
+                    ↓            ↓                         ↓
+              DNSCrypt:5300  Fail2ban                  IPBan/Honeypot
+              (DNS шифрование) (бан по логам)            (ручной/авто бан)
 ```
 
 Каждый протокол — плагин, отдающий фрагмент конфига для Sing-Box. Конфиг собирается динамически: orchestrator → collect_fragments → generate_config → nft.apply_tproxy → write_config → reload.
@@ -50,18 +50,16 @@
 | TrustTunnel | `trusttunnel` | Защищённый туннель для обхода блокировок | 🟡 В планах (Roadmap) |
 | ShadowTLS | `shadowtls` | TLS-обертка с имитацией рукопожатия доверенных сайтов | 🟡 В планах (Roadmap) |
 
-### Надстройки (ENHANCEMENT)
+### Сетевые службы (ENHANCEMENT)
 | Плагин | Что делает | Статус |
 |---|---|---|
 | DNSCrypt | Системный DNS-прокси :5300 (DoH/DNSCrypt) | 🟡 В разработке (WIP) |
 | WARP | Cloudflare WARP — AI-домены через WireGuard | 🟡 В разработке (WIP) |
-| PortHopping | nftables PREROUTING REDIRECT диапазона → порт | 🟡 В разработке (WIP) |
 
 ### Безопасность (SECURITY)
 | Плагин | Что делает | Статус |
 |---|---|---|
 | Fail2ban | Защита от перебора (sing-box/sshd/nginx) | 🟡 В разработке (WIP) |
-| GeoIP | Блокировка входящих из РФ через ipset | 🟡 В разработке (WIP) |
 | Honeypot | Ловушка для сканеров с авто-баном | 🟡 В разработке (WIP) |
 | IPBan | Ручная блокировка IP/CIDR/ASN | 🟡 В разработке (WIP) |
 
@@ -101,8 +99,8 @@ sudo python3 main.py
 В TUI:
 
 1. **Протоколы** → включить транспорты (AmneziaWG, Mieru, Naive и т.д.)
-2. **Надстройки** → DNSCrypt, WARP, PortHopping
-3. **Безопасность** → Fail2ban, GeoIP, Honeypot, IPBan
+2. **Сетевые службы** → DNSCrypt, WARP
+3. **Безопасность** → Fail2ban, Honeypot, IPBan
 4. **Пользователи** → Добавить → готовы ссылки и QR
 
 Проверить статус:
@@ -138,9 +136,7 @@ hydra/
 │   │   ├── slipgate/           # DNS-туннели
 │   │   ├── dnscrypt/           # DNSCrypt-proxy
 │   │   ├── warp/               # Cloudflare WARP
-│   │   ├── porthopping/        # Port hopping
 │   │   ├── fail2ban/           # Fail2ban
-│   │   ├── geoip/              # GeoIP
 │   │   ├── honeypot/           # Honeypot
 │   │   └── ipban/              # IPBan
 │   ├── services/

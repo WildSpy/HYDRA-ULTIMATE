@@ -54,6 +54,10 @@ def enable(state: AppState, name: str) -> bool:
     p.on_enable(state)
     proto = get_protocol(state, name)
     proto.enabled = True
+    if name == "fail2ban":
+        state.security.fail2ban_enabled = True
+    elif name == "honeypot":
+        state.security.honeypot_enabled = True
     save_state(state)
 
     # Генерируем конфиги для всех существующих пользователей
@@ -74,6 +78,10 @@ def disable(state: AppState, name: str) -> bool:
     p.on_disable(state)
     proto = get_protocol(state, name)
     proto.enabled = False
+    if name == "fail2ban":
+        state.security.fail2ban_enabled = False
+    elif name == "honeypot":
+        state.security.honeypot_enabled = False
     save_state(state)
     return apply_config(state)
 
