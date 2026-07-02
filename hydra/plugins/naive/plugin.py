@@ -397,7 +397,10 @@ class NaivePlugin(BasePlugin):
         if r_status.stdout.strip() != "active":
             import socket
             from hydra.core.sni_router import get_effective_port
+            was_enabled = ps.enabled
+            ps.enabled = True
             effective_port = get_effective_port("naive", state)
+            ps.enabled = was_enabled
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 if s.connect_ex(('127.0.0.1', effective_port)) == 0:
                     raise RuntimeError(f"Порт {effective_port} уже занят другим процессом. Не удается запустить NaiveProxy.")
