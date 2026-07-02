@@ -583,7 +583,9 @@ class NaivePlugin(BasePlugin):
         if cert_file and key_file:
             tls_line = f"    tls {cert_file} {key_file}\n"
         else:
-            tls_line = ""
+            # Без явного сертификата Caddy запускает ACME, что вызывает задержку на первый коннект.
+            # Используем встроенный CA Caddy (tls internal) — клиент NaiveProxy не проверяет серт сервера.
+            tls_line = "    tls internal\n"
 
         return f"""\
 {{

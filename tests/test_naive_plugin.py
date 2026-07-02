@@ -178,7 +178,7 @@ def test_build_caddyfile_basic():
     assert "probe_resistance mysecret123" in caddyfile
     assert "forward_proxy" in caddyfile
     assert "reverse_proxy https://www.google.com" in caddyfile
-    assert "tls" not in caddyfile
+    assert "tls internal" in caddyfile  # без сертификата должен использоваться tls internal
 
 
 def test_build_caddyfile_no_probe_secret():
