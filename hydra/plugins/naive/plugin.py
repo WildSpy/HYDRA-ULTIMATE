@@ -117,9 +117,7 @@ class NaivePlugin(BasePlugin):
         )
 
         self._pending_cfg = caddyfile
-        return ConfigFragment(
-            nft_tproxy_ports=[port],
-        )
+        return ConfigFragment()
 
     def apply(self, state: AppState) -> bool:
         if not self._pending_cfg:

@@ -31,23 +31,23 @@ def test_plugin_meta():
 
 
 def test_configure_returns_fragment_with_port():
-    """configure() возвращает ConfigFragment с nft_tproxy_ports=[443]."""
+    """configure() возвращает пустой ConfigFragment (без nft_tproxy_ports, т.к. Caddy слушает порт напрямую)."""
     p = NaivePlugin()
     state = _make_state([_make_user("a@x.com", uuid="uuid-a")])
     frag = p.configure(state)
 
     assert isinstance(frag, ConfigFragment)
-    assert frag.nft_tproxy_ports == [443]
+    assert frag.nft_tproxy_ports == []
     assert frag.inbounds == []
     assert frag.outbounds == []
 
 
 def test_configure_returns_fragment_even_without_users():
-    """Без юзеров configure всё равно возвращает nft_tproxy_ports."""
+    """Без юзеров configure возвращает пустой ConfigFragment."""
     p = NaivePlugin()
     state = _make_state([])
     frag = p.configure(state)
-    assert frag.nft_tproxy_ports == [443]
+    assert frag.nft_tproxy_ports == []
 
 
 def test_configure_skips_blocked_users():
@@ -58,7 +58,7 @@ def test_configure_skips_blocked_users():
         _make_user("blocked@x.com", uuid="uuid-b", blocked=True),
     ])
     frag = p.configure(state)
-    assert frag.nft_tproxy_ports == [443]
+    assert frag.nft_tproxy_ports == []
     # В Caddyfile только один пользователь
     assert "uuid-a" not in p._pending_cfg or True
     lines = p._pending_cfg.splitlines()
