@@ -586,6 +586,9 @@ class NaivePlugin(BasePlugin):
 {{
     http_port 0
     order forward_proxy before reverse_proxy
+    servers {{
+        protocols h1 h2
+    }}
 }}
 
 :{port}, {domain}:{port} {{
