@@ -422,7 +422,29 @@ class AnyTLSPlugin(BasePlugin):
             subprocess.run(["apt-get", "update"], capture_output=True)
             subprocess.run(["apt-get", "install", "-y", "certbot"], capture_output=True)
 
-        # 2. Временно открываем порт 80 в фаерволе
+        # 2. Временно останавливаем конфликтующие веб-серверы на порту 80
+        caddy_was_active = False
+        r_caddy = subprocess.run(["systemctl", "is-active", "caddy-naive"], capture_output=True, text=True)
+        if r_caddy.stdout.strip() == "active":
+            print("  Временно останавливаю caddy-naive...")
+            subprocess.run(["systemctl", "stop", "caddy-naive"], capture_output=True)
+            caddy_was_active = True
+
+        nginx_was_active = False
+        r_nginx = subprocess.run(["systemctl", "is-active", "nginx"], capture_output=True, text=True)
+        if r_nginx.stdout.strip() == "active":
+            print("  Временно останавливаю nginx...")
+            subprocess.run(["systemctl", "stop", "nginx"], capture_output=True)
+            nginx_was_active = True
+
+        apache_was_active = False
+        r_apache = subprocess.run(["systemctl", "is-active", "apache2"], capture_output=True, text=True)
+        if r_apache.stdout.strip() == "active":
+            print("  Временно останавливаю apache2...")
+            subprocess.run(["systemctl", "stop", "apache2"], capture_output=True)
+            apache_was_active = True
+
+        # 3. Временно открываем порт 80 в фаерволе
         ufw_opened = False
         ipt_opened = False
         if is_ufw_active():
@@ -439,7 +461,7 @@ class AnyTLSPlugin(BasePlugin):
                 ], capture_output=True)
                 ipt_opened = True
 
-        # 3. Запускаем certbot
+        # 4. Запускаем certbot
         r = subprocess.run([
             "certbot", "certonly", "--standalone",
             "-d", domain,
@@ -452,13 +474,24 @@ class AnyTLSPlugin(BasePlugin):
         if not success:
             print(f"  [Ошибка certbot] Вывод:\n{r.stderr or r.stdout or ''}")
 
-        # 4. Закрываем порт 80 в фаерволе
+        # 5. Закрываем порт 80 в фаерволе
         if ufw_opened:
             subprocess.run(["ufw", "delete", "allow", "80/tcp"], capture_output=True)
         if ipt_opened:
             subprocess.run([
                 "iptables", "-D", "INPUT", "-p", "tcp", "--dport", "80", "-j", "ACCEPT"
             ], capture_output=True)
+
+        # 6. Восстанавливаем работу веб-серверов
+        if caddy_was_active:
+            print("  Восстанавливаю caddy-naive...")
+            subprocess.run(["systemctl", "start", "caddy-naive"], capture_output=True)
+        if nginx_was_active:
+            print("  Восстанавливаю nginx...")
+            subprocess.run(["systemctl", "start", "nginx"], capture_output=True)
+        if apache_was_active:
+            print("  Восстанавливаю apache2...")
+            subprocess.run(["systemctl", "start", "apache2"], capture_output=True)
 
         return success
 
