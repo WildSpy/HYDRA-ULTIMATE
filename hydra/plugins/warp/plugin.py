@@ -79,6 +79,14 @@ class WarpPlugin(BasePlugin):
             ["wg-quick", "down", str(WGCF_PROFILE)],
             capture_output=True,
         )
+        if WGCF_PROFILE.exists():
+            WGCF_PROFILE.unlink()
+        if WGCF_BIN.exists():
+            WGCF_BIN.unlink()
+        
+        # Удаляем локальные файлы учетных записей wgcf
+        Path("wgcf-account.toml").unlink(missing_ok=True)
+        Path("wgcf-profile.conf").unlink(missing_ok=True)
         return True
 
     def _load_warp_config(self) -> dict | None:

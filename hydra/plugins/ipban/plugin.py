@@ -28,9 +28,8 @@ class IPBanPlugin(BasePlugin):
     )
 
     def install(self) -> bool:
-        if self._installed():
-            return True
-        subprocess.run(["apt-get", "install", "-y", "-qq", "ipset"], capture_output=True, timeout=120)
+        if not self._installed():
+            subprocess.run(["apt-get", "install", "-y", "-qq", "ipset"], capture_output=True, timeout=120)
         self._ensure_sets()
         self._ensure_iptables_rules()
         return self._installed()

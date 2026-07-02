@@ -419,7 +419,7 @@ def menu_core(state: AppState):
             return
         elif choice == "1":
             info("Устанавливаю Sing-Box...")
-            if install_singbox():
+            if install_singbox(force=ok_i):
                 success(f"Sing-Box {singbox_version()} установлен")
                 if orchestrator.apply_config(state):
                     success("Конфигурация пересобрана и применена")
@@ -1251,3 +1251,4 @@ def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | Non
         state.security.honeypot_enabled = enabled_val
         
     save_state(state)
+    orchestrator.apply_config(state)

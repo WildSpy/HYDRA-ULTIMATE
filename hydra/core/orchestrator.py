@@ -35,6 +35,7 @@ def install_plugin(state: AppState, name: str) -> bool:
     proto = get_protocol(state, name)
     proto.installed = ok
     save_state(state)
+    apply_config(state)
     return ok
 
 
@@ -42,6 +43,12 @@ def uninstall_plugin(state: AppState, name: str) -> bool:
     p = registry.get(name)
     if not p:
         return False
+    proto = get_protocol(state, name)
+    if proto and proto.enabled:
+        try:
+            p.on_disable(state)
+        except Exception:
+            pass
     ok = p.uninstall()
     proto = get_protocol(state, name)
     proto.installed = False
