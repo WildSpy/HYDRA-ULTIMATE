@@ -38,7 +38,7 @@ EXTERNAL_LISTS = {
     "russia": {
         "name": "РФ-сервисы",
         "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-raw.lst",
-        "desc": "Обход блокировок зарубежных ресурсов из РФ (outside-raw.lst)"
+        "desc": "Российские сервисы, доступные только с IP-адресов РФ (outside-raw.lst)"
     },
     "geoblock": {
         "name": "GEO-block",
