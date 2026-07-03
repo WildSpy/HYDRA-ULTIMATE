@@ -92,7 +92,7 @@ invalid_domain_name
     # Мок состояния
     mock_state = AppState()
     ps = mock_state.protocols.setdefault("warp", PluginState())
-    ps.config = {"external_url": "https://example.com/rules.txt"}
+    ps.config = {"enabled_external_lists": ["russia"]}
     mock_load_state.return_value = mock_state
 
     # Мок пути кэша
@@ -106,7 +106,7 @@ invalid_domain_name
     ok, msg = p.update_external_rules()
     
     assert ok is True
-    assert "Успешно загружено: 1 доменов, 2 IP" in msg
+    assert "Обновлено списков: 1/1" in msg
     
     # Проверяем, что записан валидный JSON с нашими доменами и IP через mock_cache_path
     mock_cache_path.write_text.assert_called_once()

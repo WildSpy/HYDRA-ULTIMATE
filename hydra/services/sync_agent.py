@@ -58,6 +58,38 @@ def run_sync() -> None:
         except (ValueError, TypeError):
             pass
 
+    # 3. WARP: автообновление внешних списков (раз в 24 часа)
+    try:
+        from hydra.plugins.warp.plugin import WarpPlugin
+        from hydra.core.orchestrator import apply_config
+        p = WarpPlugin()
+        status = p.status()
+        if status.enabled:
+            # Проверяем кэш
+            cache_file = Path("/var/lib/hydra/warp_external.json")
+            need_update = True
+            if cache_file.exists():
+                try:
+                    import json
+                    data = json.loads(cache_file.read_text(encoding="utf-8"))
+                    up_str = data.get("updated_at")
+                    if up_str:
+                        updated_at = datetime.fromisoformat(up_str)
+                        diff = datetime.now() - updated_at
+                        if diff.total_seconds() < 86400:
+                            need_update = False
+                except Exception:
+                    pass
+            
+            if need_update:
+                _log("WARP: Triggering daily auto-update of external rules...")
+                ok, msg = p.update_external_rules()
+                _log(f"WARP: Update result: {msg}")
+                if ok:
+                    apply_config(state)
+    except Exception as e:
+        _log(f"WARP auto-update check failed: {e}")
+
     save_state(state)
 
 

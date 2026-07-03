@@ -34,6 +34,24 @@ DEFAULT_WARP_DOMAINS = [
     "bard.google.com",
 ]
 
+EXTERNAL_LISTS = {
+    "russia": {
+        "name": "РФ-сервисы",
+        "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/outside-raw.lst",
+        "desc": "Обход блокировок зарубежных ресурсов из РФ (outside-raw.lst)"
+    },
+    "geoblock": {
+        "name": "GEO-block",
+        "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Categories/geoblock.lst",
+        "desc": "Заблокированные в РФ иностранные ресурсы (geoblock.lst)"
+    },
+    "google_ai": {
+        "name": "GoogleAI",
+        "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/google_ai.lst",
+        "desc": "Сервисы ИИ от Google: Gemini, AI Studio и др. (google_ai.lst)"
+    }
+}
+
 
 class WarpPlugin(BasePlugin):
     meta = PluginMeta(
@@ -317,56 +335,72 @@ class WarpPlugin(BasePlugin):
         return True
 
     def update_external_rules(self) -> tuple[bool, str]:
-        """Загружает правила из внешнего источника и сохраняет их в кэш."""
+        """Загружает правила из всех включенных внешних источников и сохраняет их в кэш."""
         from hydra.core.state import load_state
         state = load_state()
         ps = state.protocols.get("warp")
         if not ps:
             return False, "Плагин не настроен в state.json"
         
-        url = ps.config.get("external_url")
-        if not url:
+        enabled_keys = ps.config.get("enabled_external_lists", [])
+        if not enabled_keys:
             if WARP_EXTERNAL_CACHE.exists():
                 try:
                     WARP_EXTERNAL_CACHE.unlink()
                 except Exception:
                     pass
-            return True, "Внешний URL не задан"
+            return True, "Нет активных внешних списков"
 
         import urllib.request
-        try:
-            req = urllib.request.Request(
-                url, 
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-            )
-            with urllib.request.urlopen(req, timeout=30) as response:
-                content = response.read().decode("utf-8", errors="replace")
-        except Exception as e:
-            return False, f"Ошибка скачивания: {e}"
-
         domains = []
         ips = []
-        for line in content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("//") or line.startswith(";"):
+        downloaded_count = 0
+        errors = []
+
+        for key in enabled_keys:
+            if key not in EXTERNAL_LISTS:
                 continue
-            parts = line.split()
-            if not parts:
-                continue
-            for token in parts:
-                token = token.strip()
-                if self._is_ip_or_cidr(token):
-                    ips.append(token)
-                elif self._is_valid_domain(token):
-                    domains.append(token)
+            item = EXTERNAL_LISTS[key]
+            url = item["url"]
+            try:
+                req = urllib.request.Request(
+                    url, 
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                )
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    content = response.read().decode("utf-8", errors="replace")
+                
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or line.startswith("//") or line.startswith(";"):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    for token in parts:
+                        token = token.strip()
+                        if self._is_ip_or_cidr(token):
+                            ips.append(token)
+                        elif self._is_valid_domain(token):
+                            domains.append(token)
+                downloaded_count += 1
+            except Exception as e:
+                errors.append(f"{item['name']}: {e}")
 
         try:
             WARP_EXTERNAL_CACHE.parent.mkdir(parents=True, exist_ok=True)
             WARP_EXTERNAL_CACHE.write_text(json.dumps({
-                "domains": domains,
-                "ips": ips,
+                "domains": list(set(domains)),
+                "ips": list(set(ips)),
                 "updated_at": __import__("datetime").datetime.now().isoformat()
             }, indent=2, ensure_ascii=False), encoding="utf-8")
-            return True, f"Успешно загружено: {len(domains)} доменов, {len(ips)} IP/подсетей"
+            
+            status_msg = f"Обновлено списков: {downloaded_count}/{len(enabled_keys)}."
+            if downloaded_count > 0:
+                status_msg += f" Загружено доменов: {len(set(domains))}, IP: {len(set(ips))}."
+            if errors:
+                status_msg += f" Ошибки: {'; '.join(errors)}"
+            
+            return len(errors) == 0, status_msg
         except Exception as e:
             return False, f"Ошибка сохранения кэша: {e}"

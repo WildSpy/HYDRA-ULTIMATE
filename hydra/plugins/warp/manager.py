@@ -97,7 +97,7 @@ def menu_warp(state: AppState, plugin) -> None:
         # Данные из конфига
         domains = ps.config.setdefault("domains", DEFAULT_WARP_DOMAINS.copy())
         ips = ps.config.setdefault("ips", [])
-        ext_url = ps.config.get("external_url", "")
+        enabled_lists = ps.config.setdefault("enabled_external_lists", [])
 
         # Данные из внешнего кэша
         ext_domains, ext_ips, ext_updated = _get_external_info()
@@ -115,8 +115,10 @@ def menu_warp(state: AppState, plugin) -> None:
             status_lines.append("  " + "─" * 40)
             status_lines.append(f"  Доменов (локальных):     {CYAN}{len(domains)}{NC}")
             status_lines.append(f"  IP/подсетей (локальных):  {CYAN}{len(ips)}{NC}")
-            if ext_url:
-                status_lines.append(f"  Внешний URL:             {DIM}{ext_url[:40]}{'...' if len(ext_url) > 40 else ''}{NC}")
+            if enabled_lists:
+                from hydra.plugins.warp.plugin import EXTERNAL_LISTS
+                list_names = [EXTERNAL_LISTS[k]["name"] for k in enabled_lists if k in EXTERNAL_LISTS]
+                status_lines.append(f"  Внешние списки:          {GREEN}{', '.join(list_names)}{NC}")
                 status_lines.append(f"  Доменов (внешних):       {CYAN}{len(ext_domains)}{NC}")
                 status_lines.append(f"  IP/подсетей (внешних):    {CYAN}{len(ext_ips)}{NC}")
                 if ext_updated:
@@ -126,7 +128,7 @@ def menu_warp(state: AppState, plugin) -> None:
                 else:
                     status_lines.append(f"  Кэш обновлён:            {YELLOW}ни разу (требуется загрузка){NC}")
             else:
-                status_lines.append(f"  Внешний источник:        {DIM}не задан{NC}")
+                status_lines.append(f"  Внешние списки:          {DIM}отключены{NC}")
             
             status_lines.append("  " + "─" * 40)
             status_lines.append(f"  Всего доменов в WARP:    {GREEN}{total_domains}{NC}")
@@ -419,55 +421,63 @@ def _menu_manage_ips(state: AppState, ps) -> None:
 
 # ── Вспомогательное меню: Настройка внешнего источника ──
 def _menu_external_source(state: AppState, ps, plugin) -> None:
+    from hydra.plugins.warp.plugin import EXTERNAL_LISTS
     while True:
         clear()
-        url = ps.config.get("external_url", "")
+        enabled_lists = ps.config.setdefault("enabled_external_lists", [])
         ext_domains, ext_ips, ext_updated = _get_external_info()
         
-        lines = [
-            f"  Текущий URL:    {CYAN if url else DIM}{url or '<не задан>'}{NC}",
-            "  " + "─" * 50
-        ]
-        if url:
-            lines.append(f"  Внешних доменов: {GREEN}{len(ext_domains)}{NC}")
-            lines.append(f"  Внешних IP:      {GREEN}{len(ext_ips)}{NC}")
-            if ext_updated:
-                lines.append(f"  Дата обновления: {DIM}{ext_updated.split('.')[0].replace('T', ' ')}{NC}")
-            else:
-                lines.append(f"  Статус кэша:    {YELLOW}пуст (нужно обновить){NC}")
-        else:
-            lines.append(f"  {DIM}Укажите URL на текстовый файл. Каждая строка файла{NC}")
-            lines.append(f"  {DIM}должна содержать домен, IP или CIDR-подсеть.{NC}")
+        status_lines = []
+        for key, item in EXTERNAL_LISTS.items():
+            status = f"{GREEN}Вкл 🟢{NC}" if key in enabled_lists else f"{RED}Выкл 🔴{NC}"
+            status_lines.append(f"  • {BOLD}{item['name']}{NC} — {item['desc']}")
+            status_lines.append(f"    Статус: {status}")
+            status_lines.append("")
             
-        panel("🔗 ВНЕШНИЙ ИСТОЧНИК ПРАВИЛ WARP", lines)
+        status_lines.append("  " + "─" * 60)
+        
+        if enabled_lists:
+            status_lines.append(f"  Внешних доменов в кэше: {GREEN}{len(ext_domains)}{NC}")
+            status_lines.append(f"  Внешних IP в кэше:      {GREEN}{len(ext_ips)}{NC}")
+            if ext_updated:
+                status_lines.append(f"  Последнее обновление:   {DIM}{ext_updated.split('.')[0].replace('T', ' ')}{NC}")
+            else:
+                status_lines.append(f"  Последнее обновление:   {YELLOW}требуется запуск обновления{NC}")
+        else:
+            status_lines.append(f"  {DIM}Нет активных внешних списков. Выберите списки ниже для включения.{NC}")
+            
+        panel("🔗 ВНЕШНИЕ ИСТОЧНИКИ ПРАВИЛ (itdoginfo)", status_lines)
         
         opts = []
-        opts.append(("1", "🔗 Задать / изменить URL", "Установить ссылку на список"))
-        if url:
-            opts.append(("2", "🧹 Сбросить URL", "Очистить ссылку и удалить кэш"))
-            opts.append(("3", "🔄 Обновить правила из источника", "Скачать список прямо сейчас"))
+        # Динамически выводим опции переключения списков
+        for idx, (key, item) in enumerate(EXTERNAL_LISTS.items(), start=1):
+            action = "Отключить" if key in enabled_lists else "Включить"
+            opts.append((str(idx), f"Toggle {item['name']}", f"{action} {item['name']}"))
+            
+        opts.append(("4", "🔄 Обновить списки сейчас", "Скачать и применить активные списки правил"))
         opts.append(("0", "↩ Назад", ""))
         
-        choice = menu(opts, "ВНЕШНИЙ ИСТОЧНИК")
+        choice = menu(opts, "ВНЕШНИЕ ИСТОЧНИКИ")
         if choice == "0":
             break
             
-        elif choice == "1":
-            new_url = prompt("Введите URL списка").strip()
-            if not new_url:
-                continue
-            if not (new_url.startswith("http://") or new_url.startswith("https://")):
-                error("URL должен начинаться с http:// или https://")
-                prompt("Нажмите Enter")
-                continue
+        elif choice in ("1", "2", "3"):
+            keys = list(EXTERNAL_LISTS.keys())
+            key = keys[int(choice) - 1]
+            if key in enabled_lists:
+                enabled_lists.remove(key)
+                action_text = "отключен"
+            else:
+                enabled_lists.append(key)
+                action_text = "включен"
                 
-            ps.config["external_url"] = new_url
+            ps.config["enabled_external_lists"] = enabled_lists
             save_state(state)
-            success("Ссылка сохранена!")
+            success(f"Список {EXTERNAL_LISTS[key]['name']} успешно {action_text}!")
             
-            # Предлагаем сразу обновить
-            if confirm("Скачать правила сейчас?", default=True):
-                info("Загружаю правила...")
+            # Сразу предлагаем обновить/переприменить
+            if enabled_lists:
+                info("Обновляю внешние правила...")
                 ok, msg = plugin.update_external_rules()
                 if ok:
                     success(msg)
@@ -478,14 +488,9 @@ def _menu_external_source(state: AppState, ps, plugin) -> None:
                             _show_diagnostic_info()
                 else:
                     error(msg)
-            prompt("Нажмите Enter для продолжения")
-            
-        elif choice == "2" and url:
-            if confirm("Очистить ссылку и удалить кэшированные правила?", default=True):
-                ps.config["external_url"] = ""
-                save_state(state)
-                plugin.update_external_rules()  # Метод сам почистит кэш
-                success("Ссылка очищена, кэш удален.")
+            else:
+                # Очищаем кэш и применяем
+                plugin.update_external_rules()
                 if ps.enabled:
                     info("Применяю изменения в Sing-Box...")
                     if not orchestrator.apply_config(state):
@@ -493,8 +498,13 @@ def _menu_external_source(state: AppState, ps, plugin) -> None:
                         _show_diagnostic_info()
             prompt("Нажмите Enter для продолжения")
             
-        elif choice == "3" and url:
-            info("Обновляю список правил...")
+        elif choice == "4":
+            if not enabled_lists:
+                warn("Нет активных списков для обновления.")
+                prompt("Нажмите Enter для продолжения")
+                continue
+                
+            info("Обновляю списки правил...")
             ok, msg = plugin.update_external_rules()
             if ok:
                 success(msg)
