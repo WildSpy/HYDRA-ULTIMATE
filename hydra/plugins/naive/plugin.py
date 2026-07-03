@@ -624,8 +624,6 @@ class NaivePlugin(BasePlugin):
         else:
             tls_line = ""
 
-        probe_line = "            probe_resistance\n" if probe_secret else ""
-
         if decoy_url:
             target_decoy = decoy_url.strip()
             if not target_decoy.startswith("http://") and not target_decoy.startswith("https://"):
@@ -636,7 +634,7 @@ class NaivePlugin(BasePlugin):
             decoy_block = f"    file_server {{\n        root {fake_site_dir}\n    }}\n"
             order_line = "    order forward_proxy before file_server\n"
 
-        site_header = f":{port}, {domain}:{port}"
+        site_header = f":{port}, {domain}"
 
         return f"""\
 {{
@@ -647,7 +645,8 @@ class NaivePlugin(BasePlugin):
 {tls_line}    forward_proxy {{
 {auth_lines}            hide_ip
             hide_via
-{probe_line}    }}
+            probe_resistance
+    }}
 {decoy_block}    log {{
         output file {LOG_DIR}/access.log {{
             roll_size 10mb
