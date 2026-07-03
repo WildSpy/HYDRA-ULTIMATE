@@ -42,14 +42,11 @@ def test_configure(mock_cache, mock_load_config):
     
     # 1. Тест с дефолтными настройками
     frag = p.configure(state)
-    assert len(frag.outbounds) == 1
-    assert frag.outbounds[0]["type"] == "wireguard"
-    assert frag.outbounds[0]["tag"] == "warp"
-    assert frag.outbounds[0]["endpoint"] == "warp-wg"
+    assert len(frag.outbounds) == 0
     
     assert len(frag.endpoints) == 1
     assert frag.endpoints[0]["type"] == "wireguard"
-    assert frag.endpoints[0]["tag"] == "warp-wg"
+    assert frag.endpoints[0]["tag"] == "warp"
     assert frag.endpoints[0]["private_key"] == "test_private_key"
     
     # Дефолтные домены должны быть в правилах

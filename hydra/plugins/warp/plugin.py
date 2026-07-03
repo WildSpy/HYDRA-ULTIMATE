@@ -188,28 +188,21 @@ class WarpPlugin(BasePlugin):
         except Exception:
             server_ip = "162.159.192.1"
 
-        # WireGuard Endpoint (Синтаксис Sing-Box 1.11.0+)
+        # WireGuard Endpoint (Синтаксис Sing-Box 1.13.0+)
         endpoint = {
             "type": "wireguard",
-            "tag": "warp-wg",
+            "tag": "warp",
             "address": warp_cfg["addresses"],
             "private_key": warp_cfg["private_key"],
             "mtu": 1280,
             "peers": [
                 {
-                    "address": server_ip,
-                    "port": 2408,
+                    "server": server_ip,
+                    "server_port": 2408,
                     "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
                     "allowed_ips": ["0.0.0.0/0", "::/0"]
                 }
             ]
-        }
-
-        # Outbound, ссылающийся на endpoint
-        outbound = {
-            "type": "wireguard",
-            "tag": "warp",
-            "endpoint": "warp-wg"
         }
 
         # Получаем списки доменов и IP из конфига плагина
@@ -264,7 +257,7 @@ class WarpPlugin(BasePlugin):
             return ConfigFragment()
 
         return ConfigFragment(
-            outbounds=[outbound],
+            outbounds=[],
             endpoints=[endpoint],
             route_rules=rules,
         )
