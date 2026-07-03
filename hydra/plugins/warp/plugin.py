@@ -46,33 +46,37 @@ class WarpPlugin(BasePlugin):
         if WGCF_PROFILE.exists() and WGCF_BIN.exists():
             return True
 
-        import urllib.request
+        from hydra.utils.net import detect_arch
+        from hydra.utils.downloader import download_github_asset_filtered
+
         try:
-            # Скачиваем wgcf напрямую, если его нет
+            # Скачиваем wgcf напрямую через GitHub API, если его нет
             if not WGCF_BIN.exists():
-                url = "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_amd64"
+                arch = detect_arch()
+                def _match(name: str) -> bool:
+                    return f"linux_{arch}" in name and not name.endswith(".sha256")
+                
                 WGCF_BIN.parent.mkdir(parents=True, exist_ok=True)
-                urllib.request.urlretrieve(url, str(WGCF_BIN))
+                ok = download_github_asset_filtered("ViRb3/wgcf", _match, WGCF_BIN)
+                if not ok:
+                    return False
                 WGCF_BIN.chmod(0o755)
 
-            # Регистрация и генерация профиля
+            # Регистрация и генерация профиля в директории /etc/wireguard
+            WGCF_PROFILE.parent.mkdir(parents=True, exist_ok=True)
+            
             subprocess.run(
                 [str(WGCF_BIN), "register"],
                 capture_output=True, timeout=30,
+                cwd=str(WGCF_PROFILE.parent)
             )
             subprocess.run(
                 [str(WGCF_BIN), "generate"],
                 capture_output=True, timeout=30,
+                cwd=str(WGCF_PROFILE.parent)
             )
 
-            # Перемещаем профиль
-            profile = Path("wgcf-profile.conf")
-            if profile.exists():
-                WGCF_PROFILE.parent.mkdir(parents=True, exist_ok=True)
-                profile.rename(WGCF_PROFILE)
-
-            # Чистим локальный профиль в cwd, если остался
-            Path("wgcf-profile.conf").unlink(missing_ok=True)
+            # wgcf-profile.conf и wgcf-account.toml должны создаться в /etc/wireguard/
             return WGCF_PROFILE.exists()
         except Exception:
             return False
@@ -83,7 +87,8 @@ class WarpPlugin(BasePlugin):
         if WGCF_BIN.exists():
             WGCF_BIN.unlink()
         
-        # Удаляем локальные файлы учетных записей wgcf
+        # Удаляем локальные и системные файлы учетных записей wgcf
+        Path("/etc/wireguard/wgcf-account.toml").unlink(missing_ok=True)
         Path("wgcf-account.toml").unlink(missing_ok=True)
         Path("wgcf-profile.conf").unlink(missing_ok=True)
         try:
