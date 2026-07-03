@@ -248,7 +248,7 @@ def write_config(config: dict) -> bool:
         return False
     r = _run([str(bin_path), "check", "-c", str(tmp)])
     if r.returncode != 0:
-        _log("ERROR", f"Sing-Box config invalid: {r.stderr[:500]}")
+        _log("ERROR", f"Sing-Box config invalid: {r.stderr}")
         tmp.unlink(missing_ok=True)
         return False
 
