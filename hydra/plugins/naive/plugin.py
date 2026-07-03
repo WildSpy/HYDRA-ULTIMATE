@@ -614,10 +614,8 @@ class NaivePlugin(BasePlugin):
 
         if cert_file and key_file:
             tls_line = f"    tls {cert_file} {key_file}\n"
-        elif port == 443:
-            tls_line = "    tls {\n        on_demand\n    }\n"
         else:
-            tls_line = "    tls internal\n"
+            tls_line = ""
 
         if decoy_url:
             decoy_block = f"    reverse_proxy {decoy_url} {{\n        header_up Host {{upstream_hostport}}\n    }}\n"
