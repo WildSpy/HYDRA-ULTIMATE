@@ -130,7 +130,14 @@ def run_daemon() -> None:
                 
                 # Определяем протокол по inboundTag или type
                 inbound_tag = metadata.get("inboundTag", "") or metadata.get("type", "")
-                protocol = "anytls" if "anytls" in inbound_tag else ("mieru" if "mieru" in inbound_tag else "unknown")
+                if "anytls" in inbound_tag:
+                    protocol = "anytls"
+                elif "mieru" in inbound_tag:
+                    protocol = "mieru"
+                elif "trusttunnel" in inbound_tag:
+                    protocol = "trusttunnel"
+                else:
+                    protocol = "unknown"
 
                 if not email and protocol == "anytls":
                     sport = str(metadata.get("sourcePort", ""))
