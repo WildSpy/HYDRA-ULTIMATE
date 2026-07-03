@@ -71,6 +71,9 @@ class NetworkConfig:
     dnscrypt_port: int = 5300
     tproxy_enabled: bool = False
     tproxy_port: int = 1081   # порт dokodemo-door sing-box для TPROXY
+    clash_api_enabled: bool = False
+    clash_api_port: int = 9090
+    clash_api_secret: str = ""
 
 
 @dataclass

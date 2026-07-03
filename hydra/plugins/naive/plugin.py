@@ -267,7 +267,38 @@ class NaivePlugin(BasePlugin):
         )
 
     def traffic(self, state: AppState) -> dict[str, int]:
-        return {}
+        import json
+        log_file = LOG_DIR / "access.log"
+        if not self._installed() or not log_file.exists():
+            return {}
+
+        uname_to_email = {}
+        for u in state.users:
+            uname = self._derive_username(u)
+            uname_to_email[uname] = u.email
+
+        result: dict[str, int] = {}
+        try:
+            with log_file.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        user_id = data.get("user_id")
+                        if not user_id:
+                            user_id = data.get("user")
+                        if user_id:
+                            size = data.get("size", 0)
+                            email = uname_to_email.get(user_id)
+                            if email:
+                                result[email] = result.get(email, 0) + size
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return result
 
     def connected_clients(self, state: AppState | None = None) -> list[dict]:
         if not shutil.which("ss"):

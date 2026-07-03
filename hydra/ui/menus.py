@@ -131,9 +131,9 @@ def _sys_info(state: AppState | None = None) -> list[str]:
         d, r = divmod(int(uptime.total_seconds()), 86400)
         h, m = divmod(r, 3600)
         m, _ = divmod(m, 60)
-        lines.append(kv("CPU:", f"{cpu:.0f}%"))
-        lines.append(kv("RAM:", f"{mem.percent:.0f}%  ({_bytes_auto(mem.used)} / {_bytes_auto(mem.total)})"))
-        lines.append(kv("Диск:", f"{disk.percent:.0f}%  ({_bytes_auto(disk.used)} / {_bytes_auto(disk.total)})"))
+        lines.append(kv("CPU:", f"{_bar(cpu, 100, 12)} {cpu:.0f}%"))
+        lines.append(kv("RAM:", f"{_bar(mem.used, mem.total, 12)} {mem.percent:.0f}%  ({_bytes_auto(mem.used)} / {_bytes_auto(mem.total)})"))
+        lines.append(kv("Диск:", f"{_bar(disk.used, disk.total, 12)} {disk.percent:.0f}%  ({_bytes_auto(disk.used)} / {_bytes_auto(disk.total)})"))
         lines.append(kv("Uptime:", f"{d}д {h:02d}:{m:02d}"))
     except ImportError:
         # Резервный сбор метрик через стандартную библиотеку и /proc (на Linux)
@@ -179,17 +179,15 @@ def _sys_info(state: AppState | None = None) -> list[str]:
                     m_cached = meminfo.get("Cached", 0)
                     m_used = m_total - m_free - m_buffers - m_cached
                     m_pct = (m_used / m_total) * 100 if m_total > 0 else 0
-                    mem_str = f"{m_pct:.0f}%  ({_bytes_auto(m_used)} / {_bytes_auto(m_total)})"
+                    mem_str = f"{_bar(m_used, m_total, 12)} {m_pct:.0f}%  ({_bytes_auto(m_used)} / {_bytes_auto(m_total)})"
             
             if load_str != "—":
                 lines.append(kv("Load Avg:", load_str))
             if mem_str != "—":
                 lines.append(kv("RAM:", mem_str))
-            lines.append(kv("Диск:", f"{disk_pct:.0f}%  ({_bytes_auto(used_d)} / {_bytes_auto(total_d)})"))
+            lines.append(kv("Диск:", f"{_bar(used_d, total_d, 12)} {disk_pct:.0f}%  ({_bytes_auto(used_d)} / {_bytes_auto(total_d)})"))
             if uptime_str != "—":
                 lines.append(kv("Uptime:", uptime_str))
-        except Exception:
-            pass
     except Exception:
         pass
         
@@ -1062,94 +1060,465 @@ WantedBy=multi-user.target
 #  5. Мониторинг
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _is_enter_pressed() -> bool:
+    import select
+    import os
+    if os.name == "nt":
+        import msvcrt
+        if msvcrt.kbhit():
+            if msvcrt.getch() in (b'\r', b'\n'):
+                return True
+        return False
+    else:
+        i, o, e = select.select([sys.stdin], [], [], 0.0)
+        for s in i:
+            if s == sys.stdin:
+                sys.stdin.readline()
+                return True
+        return False
+
+
 def menu_monitoring(state: AppState):
+    from hydra.plugins.registry import transports
     while True:
         clear()
         traffic = collect_traffic(state)
         total = sum(traffic.values())
+        
+        sb_ok = singbox_installed() and is_running()
+        active_t = sum(1 for p in transports() if status_all().get(p.meta.name, {}).get("running"))
+        
         lines = [
             kv("Трафик всего:", _bytes_auto(total)),
-            kv("Пользователей:", str(len(state.users))),
+            kv("Пользователей:", f"{len(state.users)} (активно: {sum(1 for u in state.users if not u.blocked)})"),
+            kv("Sing-Box:", f"{_ok(sb_ok)}  {singbox_version() or 'не установлен'}"),
+            kv("Служб активно:", f"{active_t} из {len(transports())}"),
+            f"  {DIM}{'─' * (PANEL_W - 2)}{NC}",
         ]
         lines += _sys_info(state)
         panel("Мониторинг", lines)
 
         choice = menu(
-            [("1", "📊 Трафик по пользователям", ""),
-             ("2", "🔌 Статус протоколов", ""),
-             ("3", "📋 Лог Sing-Box", "tail -20 /var/log/sing-box/sing-box.log"),
-             ("4", "🔄 Sync Agent", "systemd timer, каждые 5 мин"),
+            [("1", "📊 Панель трафика пользователей", "Сортировка, лимиты, детальный просмотр"),
+             ("2", "🔌 Активные подключения", "Сессии пользователей в реальном времени"),
+             ("3", "🚦 Статус протоколов", "Порты и состояние запущенных служб"),
+             ("4", "📈 Живой монитор CPU/RAM", "Секундное обновление метрик, скорость сети"),
+             ("5", "📋 Просмотр системных логов", "Sing-Box, Sync-Agent, Fail2ban, Honeypot"),
+             ("6", "🔄 Управление Sync Agent", "Контроль фоновой службы и ручной запуск"),
+             ("7", "⚙️ Настройки Clash API", "Локальный API статистики Sing-Box"),
              ("0", "↩ Назад", "")],
             "МОНИТОРИНГ",
         )
         if choice == "0":
             return
         elif choice == "1":
-            _show_traffic(state)
+            _show_traffic_dashboard(state)
         elif choice == "2":
-            _show_status()
+            _show_connections(state)
         elif choice == "3":
-            _show_singbox_log()
+            _show_status()
         elif choice == "4":
-            _install_sync_agent(state)
+            _show_realtime_sys_monitor()
+        elif choice == "5":
+            _menu_logs(state)
+        elif choice == "6":
+            _menu_sync_agent(state)
+        elif choice == "7":
+            _menu_clash_api(state)
 
 
-def _show_traffic(state: AppState):
-    clear()
-    traffic = collect_traffic(state)
-    title("Трафик")
-    print()
-    for u in state.users:
-        used = traffic.get(u.email, u.traffic_used_bytes)
-        lim = int(u.traffic_limit_gb * 1073741824) if u.traffic_limit_gb else 0
-        ico = f"{RED}🔴{NC}" if u.blocked else f"{GREEN}🟢{NC}"
-        print(f"  {ico} {BOLD}{u.email}{NC}")
-        print(f"     {_bytes_auto(used)} / {u.traffic_limit_gb or '∞'} GB")
-        print(f"     {_bar(used, lim)}")
+def _show_connections(state: AppState):
+    import time
+    from hydra.plugins.registry import enabled
+    from hydra.plugins.base import PluginCategory
+    
+    while True:
+        clear()
+        title("🔌 Активные подключения")
         print()
-    prompt("Нажмите Enter")
-
-
-def _show_status():
-    clear()
-    title("Статус протоколов")
-    print()
-    for name, s in status_all().items():
-        ico = f"{GREEN}●{NC}" if s["running"] else (f"{YELLOW}●{NC}" if s["installed"] else f"{DIM}●{NC}")
-        port = f":{s['port']}" if s["port"] else ""
-        print(f"  {ico} {name:<14} порт{port:<6} {'запущен' if s['running'] else 'стоп'}")
-    print()
-    prompt("Нажмите Enter")
-
-
-def _show_singbox_log():
-    clear()
-    title("Лог Sing-Box (последние 30 строк)")
-    print()
-    try:
-        log = Path("/var/log/sing-box/sing-box.log")
-        if log.exists():
-            lines = log.read_text(encoding="utf-8").strip().split("\n")
-            for line in lines[-30:]:
-                print(f"  {DIM}{line}{NC}")
+        
+        all_clients = []
+        for p in enabled(state, PluginCategory.TRANSPORT):
+            try:
+                try:
+                    clients = p.connected_clients(state)
+                except TypeError:
+                    clients = p.connected_clients()
+                    
+                for c in clients:
+                    c["plugin"] = p.meta.name
+                    all_clients.append(c)
+            except Exception:
+                pass
+                
+        if not all_clients:
+            print(f"  {YELLOW}Нет активных подключений в данный момент.{NC}")
+            print()
         else:
-            warn("Лог-файл не найден")
-    except Exception as e:
-        error(f"Ошибка чтения лога: {e}")
+            print(f"  {BOLD}{'Протокол':<12} {'Пользователь / IP':<30} {'Трафик Rx/Tx':<20} {'Активность':<15}{NC}")
+            print(f"  {DIM}{'─' * PANEL_W}{NC}")
+            for c in all_clients:
+                plugin_name = c.get("plugin", "unknown")
+                email = c.get("email", "?")
+                rx = c.get("rx", 0)
+                tx = c.get("tx", 0)
+                online = c.get("online", True)
+                
+                activity = "—"
+                handshake = c.get("last_handshake", 0)
+                if handshake > 0:
+                    elapsed = int(time.time()) - handshake
+                    if elapsed < 0:
+                        activity = "сейчас"
+                    elif elapsed < 60:
+                        activity = f"{elapsed} сек"
+                    elif elapsed < 3600:
+                        activity = f"{elapsed // 60} мин"
+                    else:
+                        activity = f"{elapsed // 3600} ч"
+                elif online:
+                    activity = "активен"
+                    
+                status_ico = f"{GREEN}●{NC}" if online else f"{DIM}●{NC}"
+                traffic_str = f"{_bytes_auto(rx)} / {_bytes_auto(tx)}" if (rx or tx) else "—"
+                
+                email_disp = email
+                if len(email_disp) > 30:
+                    email_disp = email_disp[:27] + "..."
+                    
+                print(f"  {plugin_name:<12} {status_ico} {BOLD}{email_disp:<28}{NC} {traffic_str:<20} {activity:<15}")
+            print()
+            
+        choice = menu([
+            ("R", "🔄 Обновить список", ""),
+            ("0", "↩ Назад", "")
+        ], "АКТИВНЫЕ ПОДКЛЮЧЕНИЯ")
+        
+        if choice == "0":
+            break
+
+
+def _show_traffic_dashboard(state: AppState):
+    sort_by = "traffic"
+    while True:
+        clear()
+        traffic = collect_traffic(state)
+        title("Панель трафика пользователей")
+        print()
+        
+        users_sorted = list(state.users)
+        if sort_by == "traffic":
+            users_sorted.sort(key=lambda u: traffic.get(u.email, u.traffic_used_bytes), reverse=True)
+        elif sort_by == "name":
+            users_sorted.sort(key=lambda u: u.email.lower())
+        elif sort_by == "limit":
+            users_sorted.sort(key=lambda u: u.traffic_limit_gb, reverse=True)
+        elif sort_by == "expiry":
+            def get_expiry(u):
+                if not u.expiry_date:
+                    return "9999-12-31"
+                return u.expiry_date
+            users_sorted.sort(key=get_expiry)
+
+        for i, u in enumerate(users_sorted, 1):
+            used = traffic.get(u.email, u.traffic_used_bytes)
+            lim = int(u.traffic_limit_gb * 1073741824) if u.traffic_limit_gb else 0
+            
+            ico = f"{RED}🔴{NC}" if u.blocked else f"{GREEN}🟢{NC}"
+            
+            expiry_str = "бессрочно"
+            if u.expiry_date:
+                try:
+                    expiry = datetime.fromisoformat(u.expiry_date)
+                    now = datetime.now(expiry.tzinfo)
+                    delta = expiry - now
+                    if delta.days < 0:
+                        expiry_str = f"{RED}истёк{NC}"
+                    else:
+                        expiry_str = f"{delta.days}дн осталось"
+                except Exception:
+                    expiry_str = u.expiry_date[:10]
+            
+            lim_str = f"{u.traffic_limit_gb:.1f} GB" if u.traffic_limit_gb else "∞"
+            print(f"  {i:2d}. {ico} {BOLD}{u.email:<22}{NC}  {_bytes_auto(used)} / {lim_str}  ({expiry_str})")
+            print(f"      {_bar(used, lim, width=20)}")
+            print()
+            
+        print(f"  {DIM}{'─' * PANEL_W}{NC}")
+        print("  Сортировка: " + (f"{BOLD}[Трафик]{NC}" if sort_by == "traffic" else "[Трафик]") + " " +
+                             (f"{BOLD}[Имя]{NC}" if sort_by == "name" else "[Имя]") + " " +
+                             (f"{BOLD}[Лимит]{NC}" if sort_by == "limit" else "[Лимит]") + " " +
+                             (f"{BOLD}[Срок]{NC}" if sort_by == "expiry" else "[Срок]"))
+        print()
+        
+        choice = menu([
+            ("1", "Сортировать по трафику", ""),
+            ("2", "Сортировать по имени", ""),
+            ("3", "Сортировать по лимиту", ""),
+            ("4", "Сортировать по сроку подписки", ""),
+            ("D", "🔍 Детальная информация пользователя", ""),
+            ("0", "↩ Назад", "")
+        ], "УПРАВЛЕНИЕ ТРАФИКОМ")
+        
+        if choice == "0":
+            break
+        elif choice == "1":
+            sort_by = "traffic"
+        elif choice == "2":
+            sort_by = "name"
+        elif choice == "3":
+            sort_by = "limit"
+        elif choice == "4":
+            sort_by = "expiry"
+        elif choice.upper() == "D":
+            u = _select_user(state, "Выберите пользователя для просмотра деталей")
+            if u:
+                _show_user_detail(state, u)
+
+
+def _show_realtime_sys_monitor():
+    import time
+    clear()
+    print(f"\n  {BOLD}{CYAN}▸ Запуск живого мониторинга...{NC}")
+    print(f"  {DIM}Нажмите [Enter] для возврата в меню.{NC}\n")
+    time.sleep(0.5)
+    
+    cpu_history = []
+    
+    while True:
+        try:
+            if _is_enter_pressed():
+                break
+                
+            clear()
+            title("📈 Живой мониторинг системы")
+            print(f"  {DIM}Нажмите [Enter] для возврата в меню. Обновление каждую секунду.{NC}")
+            print()
+            
+            import psutil
+            cpu = psutil.cpu_percent(interval=0)
+            mem = psutil.virtual_memory()
+            disk = psutil.disk_usage("/")
+            
+            cpu_history.append(cpu)
+            if len(cpu_history) > 30:
+                cpu_history.pop(0)
+                
+            sparks = " ▂▃▄▅▆▇█"
+            graph = ""
+            for val in cpu_history:
+                idx = min(int(val / 12.5), 7)
+                graph += sparks[idx]
+                
+            lines = [
+                kv("CPU Usage:", f"{_bar(cpu, 100, 20)} {cpu:.1f}%"),
+                kv("CPU График:", f"{CYAN}{graph:<30}{NC}"),
+                f"  {DIM}{'─' * (PANEL_W - 2)}{NC}",
+                kv("RAM Usage:", f"{_bar(mem.used, mem.total, 20)} {mem.percent:.1f}%"),
+                kv("RAM Детали:", f"{_bytes_auto(mem.used)} / {_bytes_auto(mem.total)}"),
+                f"  {DIM}{'─' * (PANEL_W - 2)}{NC}",
+                kv("Диск всего:", f"{_bar(disk.used, disk.total, 20)} {disk.percent:.1f}%"),
+                kv("Диск Детали:", f"{_bytes_auto(disk.used)} / {_bytes_auto(disk.total)}"),
+            ]
+            panel("Живые Метрики", lines)
+            
+            try:
+                net_before = psutil.net_io_counters()
+                time.sleep(1)
+                net_after = psutil.net_io_counters()
+                rx_speed = net_after.bytes_recv - net_before.bytes_recv
+                tx_speed = net_after.bytes_sent - net_before.bytes_sent
+                print(f"  {BOLD}Сетевая активность (в сек):{NC}")
+                print(f"    📥 Получено: {GREEN}{_bytes_auto(rx_speed)}/s{NC}")
+                print(f"    📤 Отправлено: {CYAN}{_bytes_auto(tx_speed)}/s{NC}")
+            except Exception:
+                time.sleep(1)
+                
+        except (KeyboardInterrupt, SystemExit):
+            break
+        except Exception as e:
+            error(f"Ошибка мониторинга: {e}")
+            time.sleep(2)
+
+
+def _menu_logs(state: AppState):
+    lines_count = 30
+    while True:
+        clear()
+        title("📋 Просмотр системных логов")
+        print()
+        
+        log_options = [
+            ("1", "📋 Sing-Box Core log", "/var/log/sing-box/sing-box.log"),
+            ("2", "🔄 Sync Agent log", "/var/log/hydra/sync-agent.log"),
+            ("3", "📡 Traffic Daemon log", "/var/log/hydra/traffic-daemon.log")
+        ]
+        
+        f2b_log = Path("/var/log/fail2ban.log")
+        hp_log = Path("/var/log/hydra-honeypot.log")
+        caddy_log = Path("/var/log/caddy-naive/access.log")
+        
+        if f2b_log.exists():
+            log_options.append(("4", "🔒 Fail2ban log", str(f2b_log)))
+        if hp_log.exists():
+            log_options.append(("5", "🍯 Honeypot log", str(hp_log)))
+        if caddy_log.exists():
+            log_options.append(("6", "🌐 Naive Caddy Access log", str(caddy_log)))
+            
+        print(f"  {BOLD}Текущий лимит строк для просмотра:{NC} {GREEN}{lines_count}{NC}\n")
+        
+        opts = []
+        for key, name, path in log_options:
+            exists_str = "доступен" if Path(path).exists() else "не найден"
+            opts.append((key, name, f"{path} ({exists_str})"))
+            
+        opts += [
+            ("-", "", ""),
+            ("L", f"⚙️ Изменить лимит строк ({lines_count})", ""),
+            ("0", "↩ Назад", "")
+        ]
+        
+        choice = menu(opts, "ВЫБОР ЛОГ-ФАЙЛА")
+        if choice == "0":
+            break
+        elif choice.upper() == "L":
+            try:
+                new_limit = int(prompt("Введите количество строк", str(lines_count)))
+                if new_limit > 0:
+                    lines_count = new_limit
+            except ValueError:
+                warn("Введите корректное число.")
+                prompt("Нажмите Enter")
+        else:
+            selected_path = None
+            selected_title = ""
+            for key, name, path in log_options:
+                if choice == key:
+                    selected_path = path
+                    selected_title = name
+                    break
+                    
+            if selected_path:
+                _show_log_file(selected_title, selected_path, lines_count)
+
+
+def _show_log_file(title_text: str, path_str: str, num_lines: int):
+    path = Path(path_str)
+    while True:
+        clear()
+        title(f"{title_text} ({num_lines} строк)")
+        print(f"  {DIM}Файл: {path_str}{NC}")
+        print()
+        
+        if not path.exists():
+            error("Файл лога не найден.")
+            print()
+        else:
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+                for line in lines[-num_lines:]:
+                    print(f"  {DIM}{line}{NC}")
+            except Exception as e:
+                error(f"Ошибка при чтении лога: {e}")
+            print()
+            
+        choice = menu([
+            ("R", "🔄 Обновить", ""),
+            ("W", "👀 Следить за логом в реальном времени (Watch)", ""),
+            ("0", "↩ Назад", "")
+        ], "ПРОСМОТР ЛОГА")
+        
+        if choice == "0":
+            break
+        elif choice.upper() == "W":
+            _watch_log_file(title_text, path_str)
+
+
+def _watch_log_file(title_text: str, path_str: str):
+    import time
+    path = Path(path_str)
+    clear()
+    title(f"👀 Слежение: {title_text}")
+    print(f"  {DIM}Файл: {path_str}{NC}")
+    print(f"  {DIM}Нажмите [Enter] для выхода из режима слежения.{NC}")
+    print(f"  {DIM}{'─' * PANEL_W}{NC}")
     print()
-    prompt("Нажмите Enter")
+    
+    if not path.exists():
+        error("Файл лога не найден.")
+        prompt("Нажмите Enter")
+        return
+        
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            f.seek(0, 2)
+            while True:
+                if _is_enter_pressed():
+                    break
+                line = f.readline()
+                if line:
+                    print(f"  {DIM}{line.strip()}{NC}")
+                else:
+                    time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
 
 
-def _install_sync_agent(state: AppState):
-    install_timer("hydra-sync-agent",
-        """[Unit]
+def _menu_sync_agent(state: AppState):
+    while True:
+        clear()
+        
+        timer_active = False
+        r_timer = subprocess.run(["systemctl", "is-active", "hydra-sync-agent.timer"], capture_output=True, text=True)
+        if r_timer.returncode == 0 and r_timer.stdout.strip() == "active":
+            timer_active = True
+            
+        log_path = Path("/var/log/hydra/sync-agent.log")
+        last_log_line = "нет логов"
+        if log_path.exists():
+            try:
+                lines = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+                if lines:
+                    last_log_line = lines[-1]
+            except Exception:
+                pass
+                
+        lines = [
+            kv("Таймер (5 мин):", f"{GREEN}активен 🟢{NC}" if timer_active else f"{RED}отключен 🔴{NC}"),
+            kv("Лог-файл:", f"{_bytes_auto(log_path.stat().st_size) if log_path.exists() else 'не создан'}"),
+            kv("Последняя запись:", f"{DIM}{last_log_line}{NC}"),
+        ]
+        panel("Управление Sync Agent", lines)
+        
+        choice = menu([
+            ("1", "⚡ Запустить синхронизацию сейчас", "Принудительно проверить лимиты и TTL"),
+            ("2", "✅ Включить таймер (каждые 5 мин)", "Создать и запустить systemd timer"),
+            ("3", "❌ Отключить таймер", "Остановить и удалить systemd timer"),
+            ("4", "📋 Показать лог sync-agent", "Последние 30 строк лога sync-agent.log"),
+            ("0", "↩ Назад", "")
+        ], "SYNC AGENT")
+        
+        if choice == "0":
+            break
+        elif choice == "1":
+            info("Запуск ручной синхронизации...")
+            try:
+                from hydra.services.sync_agent import run_sync
+                run_sync()
+                success("Синхронизация успешно выполнена")
+            except Exception as e:
+                error(f"Ошибка при синхронизации: {e}")
+            prompt("Нажмите Enter")
+        elif choice == "2":
+            install_timer("hydra-sync-agent",
+                """[Unit]
 Description=HYDRA Sync Agent
 After=network.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 -m hydra.services.sync_agent
 """,
-        """[Unit]
+                """[Unit]
 Description=HYDRA Sync Agent Timer
 [Timer]
 OnCalendar=*:0/5
@@ -1157,8 +1526,83 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 """)
-    success("Sync Agent установлен (каждые 5 мин)")
-    prompt("Нажмите Enter")
+            success("Sync Agent таймер установлен и запущен (каждые 5 мин)")
+            prompt("Нажмите Enter")
+        elif choice == "3":
+            info("Удаление таймера...")
+            try:
+                remove_unit("hydra-sync-agent.timer")
+                remove_unit("hydra-sync-agent.service")
+                success("Sync Agent таймер удалён")
+            except Exception as e:
+                error(f"Ошибка при удалении: {e}")
+            prompt("Нажмите Enter")
+        elif choice == "4":
+            _show_log_file("Sync Agent", str(log_path), 30)
+
+
+def _menu_clash_api(state: AppState):
+    while True:
+        clear()
+        
+        enabled_status = getattr(state.network, "clash_api_enabled", False)
+        port = getattr(state.network, "clash_api_port", 9090)
+        secret = getattr(state.network, "clash_api_secret", "")
+        
+        daemon_active = False
+        r_daemon = subprocess.run(["systemctl", "is-active", "hydra-traffic-daemon.service"], capture_output=True, text=True)
+        if r_daemon.returncode == 0 and r_daemon.stdout.strip() == "active":
+            daemon_active = True
+            
+        lines = [
+            kv("Clash API:", f"{GREEN}включен 🟢{NC}" if enabled_status else f"{RED}выключен 🔴{NC}"),
+            kv("Порт (localhost):", str(port)),
+            kv("Секретный ключ:", secret or "(не установлен)"),
+            kv("Демон учета:", f"{GREEN}активен 🟢{NC}" if daemon_active else f"{RED}не активен 🔴{NC}"),
+        ]
+        panel("Настройки Clash API", lines)
+        
+        choice = menu([
+            ("1", "Включить / Выключить Clash API", "Переключить статус"),
+            ("2", "Изменить порт", "Изменить локальный порт API"),
+            ("3", "Изменить секретный ключ", "Задать пароль авторизации"),
+            ("0", "↩ Назад", "")
+        ], "CLASH API")
+        
+        if choice == "0":
+            break
+        elif choice == "1":
+            state.network.clash_api_enabled = not enabled_status
+            save_state(state)
+            info("Пересборка конфигурации Sing-Box...")
+            from hydra.core.orchestrator import apply_config
+            apply_config(state)
+            success("Статус изменен")
+            prompt("Нажмите Enter")
+        elif choice == "2":
+            try:
+                new_port = int(prompt("Введите новый порт (1024-65535)", str(port)))
+                if 1024 <= new_port <= 65535:
+                    state.network.clash_api_port = new_port
+                    save_state(state)
+                    info("Применение нового порта...")
+                    from hydra.core.orchestrator import apply_config
+                    apply_config(state)
+                    success("Порт изменен")
+                else:
+                    warn("Неверный диапазон.")
+            except ValueError:
+                warn("Некорректное число.")
+            prompt("Нажмите Enter")
+        elif choice == "3":
+            new_secret = prompt("Введите секретный ключ (пусто для сброса)", secret)
+            state.network.clash_api_secret = new_secret
+            save_state(state)
+            info("Применение ключа...")
+            from hydra.core.orchestrator import apply_config
+            apply_config(state)
+            success("Ключ изменен")
+            prompt("Нажмите Enter")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

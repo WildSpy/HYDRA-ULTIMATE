@@ -305,3 +305,28 @@ def test_find_existing_cert_and_tls_config():
     )
     assert "tls /path/to/cert.pem /path/to/key.pem" in caddyfile
     assert "on_demand" not in caddyfile
+
+
+def test_traffic_parses_caddy_access_logs(tmp_path):
+    p = NaivePlugin()
+    user = _make_user("user_email@example.com", uuid="uuid-a")
+    state = _make_state([user])
+    
+    caddy_username = p._derive_username(user)
+    
+    log_content = (
+        f'{{"ts":1698246377,"user_id":"{caddy_username}","size":1000}}\n'
+        f'{{"ts":1698246378,"user_id":"{caddy_username}","size":1500}}\n'
+        f'{{"ts":1698246379,"user_id":"other_user","size":5000}}\n'
+        f'{{"ts":1698246380,"user":"{caddy_username}","size":500}}\n'
+        f'invalid json\n'
+    )
+    
+    log_file = tmp_path / "access.log"
+    log_file.write_text(log_content, encoding="utf-8")
+    
+    with patch.object(p, "_installed", return_value=True), \
+         patch("hydra.plugins.naive.plugin.LOG_DIR", tmp_path):
+        traffic_data = p.traffic(state)
+        assert traffic_data == {"user_email@example.com": 3000}
+

@@ -55,7 +55,57 @@ def apply_config(state: AppState) -> bool:
         subprocess.run(["systemctl", "reset-failed", "caddy-naive"], capture_output=True)
         subprocess.run(["systemctl", "restart", "caddy-naive"], capture_output=True)
 
+    # Управляем traffic daemon
+    try:
+        _manage_traffic_daemon(state)
+    except Exception:
+        pass
+
     return res
+
+
+def _manage_traffic_daemon(state: AppState) -> None:
+    import subprocess
+    from pathlib import Path
+    
+    service_file = Path("/etc/systemd/system/hydra-traffic-daemon.service")
+    enabled = getattr(state.network, "clash_api_enabled", False)
+    
+    if enabled:
+        unit = """[Unit]
+Description=HYDRA User Traffic Accounting Daemon
+After=sing-box.service
+Wants=sing-box.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 -m hydra.services.traffic_daemon
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+        try:
+            if not service_file.exists() or service_file.read_text() != unit:
+                service_file.write_text(unit)
+                subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+                subprocess.run(["systemctl", "enable", "hydra-traffic-daemon"], capture_output=True)
+            
+            subprocess.run(["systemctl", "start", "hydra-traffic-daemon"], capture_output=True)
+        except Exception:
+            pass
+    else:
+        try:
+            subprocess.run(["systemctl", "stop", "hydra-traffic-daemon"], capture_output=True)
+            subprocess.run(["systemctl", "disable", "hydra-traffic-daemon"], capture_output=True)
+            if service_file.exists():
+                service_file.unlink()
+                subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+        except Exception:
+            pass
+
 
 
 def install_plugin(state: AppState, name: str) -> bool:

@@ -165,6 +165,17 @@ def _base_config(state: AppState) -> dict:
         config["route"]["rules"].append({
             "action": "sniff",
         })
+        
+    if getattr(state.network, "clash_api_enabled", False):
+        port = getattr(state.network, "clash_api_port", 9090)
+        secret = getattr(state.network, "clash_api_secret", "")
+        config["experimental"] = {
+            "clash_api": {
+                "external_controller": f"127.0.0.1:{port}",
+                "secret": secret
+            }
+        }
+        
     return config
 
 
