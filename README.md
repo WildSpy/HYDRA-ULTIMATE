@@ -1,6 +1,6 @@
-# HYDRA v0.0.3 BETA
+# HYDRA v0.0.4 BETA
 
-[![Version](https://img.shields.io/badge/version-0.0.3--beta-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-0.0.4--beta-blue.svg)]()
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-lightgrey.svg)]()
@@ -9,7 +9,8 @@
 
 > [!IMPORTANT]
 > На данный момент полностью готовы, отлажены и стабильно работают плагины **AmneziaWG 2.0** (интегрирован напрямую в ядро Sing-Box через TPROXY), **Mieru**, **AnyTLS** и **NaiveProxy** (работает через QUIC).
-> Все остальные плагины (транспорты, надстройки и модули безопасности) находятся на этапе активной разработки и интеграции (WIP).
+> В разделе безопасности полностью готовы и снабжены интерактивными пультами управления плагины **Fail2ban** (защита от перебора sing-box/sshd), **Honeypot** (ловушка сканеров с авто-баном) и **IPBan** (ручная блокировка IP/CIDR/диапазонов/ASN).
+> Все остальные плагины (транспорты, надстройки) находятся на этапе активной разработки (WIP).
 
 ---
 
@@ -58,9 +59,9 @@
 ### Безопасность (SECURITY)
 | Плагин | Что делает | Статус |
 |---|---|---|
-| Fail2ban | Защита от перебора (sing-box/sshd/nginx) | 🟡 В разработке (WIP) |
-| Honeypot | Ловушка для сканеров с авто-баном | 🟡 В разработке (WIP) |
-| IPBan | Ручная блокировка IP/CIDR/ASN | 🟡 В разработке (WIP) |
+| Fail2ban | Защита от перебора (sing-box/sshd) | 🟢 Готов (Ready) |
+| Honeypot | Ловушка для сканеров с авто-баном | 🟢 Готов (Ready) |
+| IPBan | Ручная блокировка IP/CIDR/диапазона/ASN | 🟢 Готов (Ready) |
 
 ---
 
