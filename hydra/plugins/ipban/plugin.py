@@ -29,17 +29,23 @@ class IPBanPlugin(BasePlugin):
 
     def install(self) -> bool:
         if not self._installed():
-            subprocess.run(["apt-get", "install", "-y", "-qq", "ipset"], capture_output=True, timeout=120)
+            subprocess.run(
+                ["bash", "-c", "apt-get update -qq && apt-get install -y -qq ipset"],
+                capture_output=True, timeout=180
+            )
+        if not self._installed():
+            return False
         self._ensure_sets()
         self._ensure_iptables_rules()
-        return self._installed()
+        return True
 
     def uninstall(self) -> bool:
         self._remove_iptables_rules()
-        subprocess.run(["ipset", "flush", IPSET_V4], capture_output=True)
-        subprocess.run(["ipset", "flush", IPSET_V6], capture_output=True)
-        subprocess.run(["ipset", "destroy", IPSET_V4], capture_output=True)
-        subprocess.run(["ipset", "destroy", IPSET_V6], capture_output=True)
+        if self._installed():
+            subprocess.run(["ipset", "flush", IPSET_V4], capture_output=True)
+            subprocess.run(["ipset", "flush", IPSET_V6], capture_output=True)
+            subprocess.run(["ipset", "destroy", IPSET_V4], capture_output=True)
+            subprocess.run(["ipset", "destroy", IPSET_V6], capture_output=True)
         STATE_FILE.unlink(missing_ok=True)
         return True
 
@@ -85,6 +91,8 @@ class IPBanPlugin(BasePlugin):
         return True
 
     def unban_ip(self, display: str) -> bool:
+        if not self._installed():
+            return False
         state = self._load_state()
         entry = next((e for e in state.get("entries", []) if e.get("display") == display), None)
         if not entry:
@@ -150,6 +158,8 @@ class IPBanPlugin(BasePlugin):
         return result
 
     def _ensure_sets(self) -> None:
+        if not self._installed():
+            return
         for name, family in [(IPSET_V4, "inet"), (IPSET_V6, "inet6")]:
             subprocess.run(["ipset", "create", name, "hash:net", "family", family, "maxelem", "65536", "-exist"], capture_output=True)
 
@@ -204,6 +214,8 @@ class IPBanPlugin(BasePlugin):
         self._save_state(state)
 
     def _restore_from_state(self) -> None:
+        if not self._installed():
+            return
         state = self._load_state()
         for e in state.get("entries", []):
             for cidr in e.get("cidrs", []):
@@ -216,11 +228,15 @@ class IPBanPlugin(BasePlugin):
         return {}
 
     def on_enable(self, state: AppState) -> None:
+        if not self._installed():
+            return
         self._ensure_sets()
         self._ensure_iptables_rules()
         self._restore_from_state()
 
     def on_disable(self, state: AppState) -> None:
+        if not self._installed():
+            return
         self._remove_iptables_rules()
         subprocess.run(["ipset", "flush", IPSET_V4], capture_output=True)
         subprocess.run(["ipset", "flush", IPSET_V6], capture_output=True)
