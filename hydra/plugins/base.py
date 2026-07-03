@@ -38,6 +38,7 @@ class ConfigFragment:
     route_rules: list[dict] = field(default_factory=list)
     nft_tproxy_ports: list[int] = field(default_factory=list)
     nft_tproxy_ifaces: list[str] = field(default_factory=list)
+    endpoints: list[dict] = field(default_factory=list)
 
 
 class BasePlugin(ABC):

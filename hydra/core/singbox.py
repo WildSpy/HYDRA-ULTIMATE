@@ -213,10 +213,19 @@ def _dns_config(state: AppState) -> dict:
 
 def generate_config(state: AppState, fragments: dict[str, ConfigFragment]) -> dict:
     config = _base_config(state)
+    
+    if "endpoints" not in config:
+        config["endpoints"] = []
+
     for name, frag in fragments.items():
         config["inbounds"].extend(frag.inbounds)
         config["outbounds"].extend(frag.outbounds)
         config["route"]["rules"].extend(frag.route_rules)
+        if hasattr(frag, "endpoints") and frag.endpoints:
+            config["endpoints"].extend(frag.endpoints)
+
+    if "endpoints" in config and not config["endpoints"]:
+        config.pop("endpoints")
 
     # DNS-конфиг (DNSCrypt / публичные DoH)
     config["dns"] = _dns_config(state)
