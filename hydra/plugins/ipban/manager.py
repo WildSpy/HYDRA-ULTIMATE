@@ -68,7 +68,7 @@ def menu_ipban(state: AppState, plugin) -> None:
                 if plugin.install():
                     success("Успешно установлено!")
                 else:
-                    error("Не удалось настроить ipset.")
+                    error("Не удалось настроить ipset. Подробнее в логе: /var/log/hydra/install.log")
                 prompt("Нажмите Enter для продолжения")
             continue
             
