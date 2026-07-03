@@ -178,7 +178,6 @@ def test_build_caddyfile_basic():
     assert "basic_auth testuser testpass" in caddyfile
     assert "probe_resistance mysecret123" in caddyfile
     assert "forward_proxy" in caddyfile
-    assert "upstream socks5://127.0.0.1:1080" in caddyfile
     assert "reverse_proxy https://www.google.com" in caddyfile
     assert "tls" not in caddyfile
 
@@ -195,7 +194,6 @@ def test_build_caddyfile_fake_site():
     )
     assert "file_server" in caddyfile
     assert "root /var/www/naive-fake" in caddyfile
-    assert "upstream socks5://127.0.0.1:1080" in caddyfile
 
 
 def test_build_caddyfile_multiple_users():
@@ -211,7 +209,6 @@ def test_build_caddyfile_multiple_users():
         ],
         probe_secret="s",
     )
-    assert "upstream socks5://127.0.0.1:1080" in caddyfile
     lines = caddyfile.splitlines()
     auth_lines = [l for l in lines if "basic_auth" in l]
     assert len(auth_lines) == 3
@@ -303,5 +300,4 @@ def test_find_existing_cert_and_tls_config():
         key_file="/path/to/key.pem",
     )
     assert "tls /path/to/cert.pem /path/to/key.pem" in caddyfile
-    assert "upstream socks5://127.0.0.1:1080" in caddyfile
     assert "on_demand" not in caddyfile

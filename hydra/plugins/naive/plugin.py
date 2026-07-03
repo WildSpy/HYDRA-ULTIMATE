@@ -637,7 +637,6 @@ class NaivePlugin(BasePlugin):
 {tls_line}    forward_proxy {{
 {auth_lines}            hide_ip
             hide_via
-            upstream socks5://127.0.0.1:1080
 {probe_line}    }}
 {decoy_block}    log {{
         output file {LOG_DIR}/access.log {{
