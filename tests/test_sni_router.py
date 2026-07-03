@@ -83,6 +83,7 @@ def test_config_has_sni_rules():
     
     assert "req_ssl_sni -i naive.com" in cfg
     assert "req_ssl_sni -i anytls.com" in cfg
+    assert "default_backend bk_naive" in cfg
 
 
 def test_rebuild_starts_haproxy():

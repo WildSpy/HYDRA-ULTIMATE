@@ -97,6 +97,10 @@ def _generate_config(backends: list[dict]) -> str:
         domain = b["domain"]
         lines.append(f"    use_backend bk_{name} if {{ req_ssl_sni -i {domain} }}")
         
+    if backends:
+        first_name = backends[0]["name"]
+        lines.append(f"    default_backend bk_{first_name}")
+        
     lines.append("")
     for b in backends:
         name = b["name"]
