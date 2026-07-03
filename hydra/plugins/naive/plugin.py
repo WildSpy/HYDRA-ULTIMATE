@@ -179,6 +179,7 @@ class NaivePlugin(BasePlugin):
             "tls": {
                 "enabled": True,
                 "server_name": domain,
+                "alpn": ["h2"],
             },
         }
 
