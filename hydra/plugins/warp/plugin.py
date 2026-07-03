@@ -197,8 +197,8 @@ class WarpPlugin(BasePlugin):
             "mtu": 1280,
             "peers": [
                 {
-                    "server": server_ip,
-                    "server_port": 2408,
+                    "address": server_ip,
+                    "port": 2408,
                     "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
                     "allowed_ips": ["0.0.0.0/0", "::/0"]
                 }
