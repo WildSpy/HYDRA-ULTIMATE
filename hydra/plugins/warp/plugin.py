@@ -1,15 +1,12 @@
 """
 hydra/plugins/warp/plugin.py — Cloudflare WARP.
 
-WARP обеспечивает исходящий трафик через сеть Cloudflare.
-Реализован как WireGuard-интерфейс (wgcf) + Sing-Box outbound с route-правилами.
+WARP обеспечивает выборочный исходящий трафик через сеть Cloudflare.
+Реализован как WireGuard outbound в Sing-Box с route-правилами.
 
 Архитектура:
-  Любой inbound → Sing-Box routing → WARP outbound (wgcf) → Cloudflare → интернет
-
-Маршрутизация:
-  - WARP-домены (openai.com, claude.ai и др.) → через WARP
-  - Всё остальное → direct
+  Inbound → Sing-Box routing (селективные домены / IP) → WARP outbound → Cloudflare → интернет
+  Всё остальное → direct
 """
 from __future__ import annotations
 
@@ -24,7 +21,9 @@ from hydra.core.state import AppState
 WGCF_BIN = Path("/usr/local/bin/wgcf")
 WGCF_PROFILE = Path("/etc/wireguard/wgcf-profile.conf")
 WARP_INTERFACE = "wgcf"
-WARP_DOMAINS = [
+WARP_EXTERNAL_CACHE = Path("/var/lib/hydra/warp_external.json")
+
+DEFAULT_WARP_DOMAINS = [
     "openai.com",
     "claude.ai",
     "anthropic.com",
@@ -38,21 +37,23 @@ WARP_DOMAINS = [
 class WarpPlugin(BasePlugin):
     meta = PluginMeta(
         name="warp",
-        description="Cloudflare WARP: туннелирование через сеть Cloudflare",
+        description="Cloudflare WARP: выборочное туннелирование через сеть Cloudflare",
         category=PluginCategory.ENHANCEMENT,
-        version="2.0.0",
+        version="2.1.0",
     )
 
     def install(self) -> bool:
-        if WGCF_BIN.exists():
+        if WGCF_PROFILE.exists() and WGCF_BIN.exists():
             return True
 
         import urllib.request
         try:
-            # Скачиваем wgcf напрямую
-            url = "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_amd64"
-            urllib.request.urlretrieve(url, str(WGCF_BIN))
-            WGCF_BIN.chmod(0o755)
+            # Скачиваем wgcf напрямую, если его нет
+            if not WGCF_BIN.exists():
+                url = "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_amd64"
+                WGCF_BIN.parent.mkdir(parents=True, exist_ok=True)
+                urllib.request.urlretrieve(url, str(WGCF_BIN))
+                WGCF_BIN.chmod(0o755)
 
             # Регистрация и генерация профиля
             subprocess.run(
@@ -70,15 +71,13 @@ class WarpPlugin(BasePlugin):
                 WGCF_PROFILE.parent.mkdir(parents=True, exist_ok=True)
                 profile.rename(WGCF_PROFILE)
 
+            # Чистим локальный профиль в cwd, если остался
+            Path("wgcf-profile.conf").unlink(missing_ok=True)
             return WGCF_PROFILE.exists()
         except Exception:
             return False
 
     def uninstall(self) -> bool:
-        subprocess.run(
-            ["wg-quick", "down", str(WGCF_PROFILE)],
-            capture_output=True,
-        )
         if WGCF_PROFILE.exists():
             WGCF_PROFILE.unlink()
         if WGCF_BIN.exists():
@@ -87,6 +86,10 @@ class WarpPlugin(BasePlugin):
         # Удаляем локальные файлы учетных записей wgcf
         Path("wgcf-account.toml").unlink(missing_ok=True)
         Path("wgcf-profile.conf").unlink(missing_ok=True)
+        try:
+            WARP_EXTERNAL_CACHE.unlink(missing_ok=True)
+        except Exception:
+            pass
         return True
 
     def _load_warp_config(self) -> dict | None:
@@ -94,7 +97,11 @@ class WarpPlugin(BasePlugin):
         if not WGCF_PROFILE.exists():
             return None
 
-        text = WGCF_PROFILE.read_text()
+        try:
+            text = WGCF_PROFILE.read_text(encoding="utf-8")
+        except Exception:
+            return None
+
         private = re.search(r"PrivateKey\s*=\s*(\S+)", text)
         address = re.search(r"Address\s*=\s*(\S+)", text)
 
@@ -124,13 +131,56 @@ class WarpPlugin(BasePlugin):
             "mtu": 1280,
         }
 
-        # Route rules: WARP-домены → WARP outbound
-        rules = [
-            {
-                "domain": WARP_DOMAINS,
-                "outbound": "warp",
-            }
-        ]
+        # Получаем списки доменов и IP из конфига плагина
+        ps = state.protocols.get("warp")
+        if ps:
+            # Инициализация дефолтами, если ключи отсутствуют
+            if "domains" not in ps.config:
+                ps.config["domains"] = DEFAULT_WARP_DOMAINS.copy()
+            if "ips" not in ps.config:
+                ps.config["ips"] = []
+            
+            domains = ps.config.get("domains", [])
+            ips = ps.config.get("ips", [])
+        else:
+            domains = DEFAULT_WARP_DOMAINS.copy()
+            ips = []
+
+        # Загружаем правила из кэша внешнего источника
+        ext_domains = []
+        ext_ips = []
+        if WARP_EXTERNAL_CACHE.exists():
+            try:
+                ext_data = json.loads(WARP_EXTERNAL_CACHE.read_text(encoding="utf-8"))
+                ext_domains = ext_data.get("domains", [])
+                ext_ips = ext_data.get("ips", [])
+            except Exception:
+                pass
+
+        all_domains = list(set(domains + ext_domains))
+        all_ips = list(set(ips + ext_ips))
+
+        # Генерируем route_rules для Sing-Box
+        rules = []
+        if all_domains:
+            clean_domains = [d.strip() for d in all_domains if d.strip()]
+            if clean_domains:
+                rules.append({
+                    "domain": clean_domains,
+                    "outbound": "warp",
+                })
+        if all_ips:
+            clean_ips = [ip.strip() for ip in all_ips if ip.strip()]
+            if clean_ips:
+                rules.append({
+                    "ip_cidr": clean_ips,
+                    "outbound": "warp",
+                })
+
+        # Если нет ни одного правила маршрутизации, не отдаем outbound/правила,
+        # чтобы зря не занимать ресурсы и не перезаписывать пустые правила
+        if not rules:
+            return ConfigFragment()
 
         return ConfigFragment(
             outbounds=[outbound],
@@ -138,18 +188,25 @@ class WarpPlugin(BasePlugin):
         )
 
     def status(self) -> PluginStatus:
+        from hydra.core.singbox import is_running as sb_running
+        from hydra.core.state import load_state
+
         installed = WGCF_PROFILE.exists()
+        enabled = False
         running = False
-        if installed:
-            r = subprocess.run(
-                ["ip", "link", "show", WARP_INTERFACE],
-                capture_output=True,
-            )
-            running = r.returncode == 0
+        
+        try:
+            state = load_state()
+            ps = state.protocols.get("warp")
+            if ps:
+                enabled = ps.enabled
+                running = enabled and sb_running()
+        except Exception:
+            pass
 
         return PluginStatus(
             installed=installed,
-            enabled=bool(WGCF_PROFILE.exists()),
+            enabled=enabled,
             running=running,
         )
 
@@ -158,15 +215,83 @@ class WarpPlugin(BasePlugin):
 
     def on_enable(self, state: AppState) -> None:
         state.network.warp_enabled = True
-        if WGCF_PROFILE.exists():
-            subprocess.run(
-                ["wg-quick", "up", str(WGCF_PROFILE)],
-                capture_output=True,
-            )
 
     def on_disable(self, state: AppState) -> None:
         state.network.warp_enabled = False
-        subprocess.run(
-            ["wg-quick", "down", str(WGCF_PROFILE)],
-            capture_output=True,
-        )
+
+    @staticmethod
+    def _is_ip_or_cidr(token: str) -> bool:
+        import ipaddress
+        try:
+            if "/" in token:
+                ipaddress.ip_network(token, strict=False)
+            else:
+                ipaddress.ip_address(token)
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _is_valid_domain(token: str) -> bool:
+        if not token or len(token) > 253:
+            return False
+        # Разрешаем опциональную начальную точку для wildcard-доменов в Sing-Box (например: .google.com)
+        pattern = r"^\.?[a-zA-Z0-9][-a-zA-Z0-9._]*\.[a-zA-Z]{2,24}$"
+        if not re.match(pattern, token):
+            return False
+        return True
+
+    def update_external_rules(self) -> tuple[bool, str]:
+        """Загружает правила из внешнего источника и сохраняет их в кэш."""
+        from hydra.core.state import load_state
+        state = load_state()
+        ps = state.protocols.get("warp")
+        if not ps:
+            return False, "Плагин не настроен в state.json"
+        
+        url = ps.config.get("external_url")
+        if not url:
+            if WARP_EXTERNAL_CACHE.exists():
+                try:
+                    WARP_EXTERNAL_CACHE.unlink()
+                except Exception:
+                    pass
+            return True, "Внешний URL не задан"
+
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                url, 
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            )
+            with urllib.request.urlopen(req, timeout=30) as response:
+                content = response.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            return False, f"Ошибка скачивания: {e}"
+
+        domains = []
+        ips = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("//") or line.startswith(";"):
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            for token in parts:
+                token = token.strip()
+                if self._is_ip_or_cidr(token):
+                    ips.append(token)
+                elif self._is_valid_domain(token):
+                    domains.append(token)
+
+        try:
+            WARP_EXTERNAL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            WARP_EXTERNAL_CACHE.write_text(json.dumps({
+                "domains": domains,
+                "ips": ips,
+                "updated_at": __import__("datetime").datetime.now().isoformat()
+            }, indent=2, ensure_ascii=False), encoding="utf-8")
+            return True, f"Успешно загружено: {len(domains)} доменов, {len(ips)} IP/подсетей"
+        except Exception as e:
+            return False, f"Ошибка сохранения кэша: {e}"

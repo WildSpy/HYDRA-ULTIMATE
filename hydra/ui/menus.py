@@ -550,6 +550,10 @@ def menu_plugin(state: AppState, p):
         from hydra.plugins.honeypot.manager import menu_honeypot
         menu_honeypot(state, p)
         return
+    if p.meta.name == "warp":
+        from hydra.plugins.warp.manager import menu_warp
+        menu_warp(state, p)
+        return
 
     from hydra.core.state import get_protocol
     
