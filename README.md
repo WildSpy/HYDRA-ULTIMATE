@@ -8,8 +8,7 @@
 > HYDRA – платформа для развёртывания прокси-серверов на базе **Sing-Box** как единого оркестратора трафика. Модульная архитектура: 17 плагинов (9 транспортов, 3 надстройки, 4 безопасности) с единой политикой роутинга, DNS и безопасности.
 
 > [!IMPORTANT]
-> На данный момент полностью готовы, отлажены и стабильно работают плагины **AmneziaWG 2.0** (интегрирован напрямую в ядро Sing-Box через TPROXY), **Mieru** и **AnyTLS**.
-> Плагин **NaiveProxy** реализован, но находится под вопросом (требует дополнительного тестирования / блокировки DPI).
+> На данный момент полностью готовы, отлажены и стабильно работают плагины **AmneziaWG 2.0** (интегрирован напрямую в ядро Sing-Box через TPROXY), **Mieru**, **AnyTLS** и **NaiveProxy** (работает через QUIC).
 > Все остальные плагины (транспорты, надстройки и модули безопасности) находятся на этапе активной разработки и интеграции (WIP).
 
 ---
@@ -42,7 +41,7 @@
 |---|---|---|---|
 | AmneziaWG 2.0 | `amneziawg` | Kernel-модуль, интегрирован в ядро Sing-Box через TPROXY | 🟢 Готов (Ready) |
 | Mieru | `mieru` | mTLS + random padding | 🟢 Готов (Ready) |
-| NaiveProxy | `naive` | Caddy (TLS) + fake-site | 🟡 Под вопросом (Testing) |
+| NaiveProxy | `naive` | Caddy (TLS) + fake-site (работает через QUIC) | 🟢 Готов (Ready) |
 | MTProto | `telemt` | Telegram MTProto, multi-user | 🟡 В разработке (WIP) |
 | qWDTT | `wdtt` | WG over TURN, per-user | 🟡 В разработке (WIP) |
 | SlipGate | `slipgate` | DNS-туннели (DNSTT/Noize/Slipstream/VayDNS) | 🟡 В разработке (WIP) |
