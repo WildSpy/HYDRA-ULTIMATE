@@ -131,9 +131,9 @@ def _sys_info(state: AppState | None = None) -> list[str]:
         d, r = divmod(int(uptime.total_seconds()), 86400)
         h, m = divmod(r, 3600)
         m, _ = divmod(m, 60)
-        lines.append(kv("CPU:", f"{_bar(cpu, 100, 12)} {cpu:.0f}%"))
-        lines.append(kv("RAM:", f"{_bar(mem.used, mem.total, 12)} {mem.percent:.0f}%  ({_bytes_auto(mem.used)} / {_bytes_auto(mem.total)})"))
-        lines.append(kv("Диск:", f"{_bar(disk.used, disk.total, 12)} {disk.percent:.0f}%  ({_bytes_auto(disk.used)} / {_bytes_auto(disk.total)})"))
+        lines.append(kv("CPU:", f"{cpu:.0f}%"))
+        lines.append(kv("RAM:", f"{mem.percent:.0f}%  ({_bytes_auto(mem.used)} / {_bytes_auto(mem.total)})"))
+        lines.append(kv("Диск:", f"{disk.percent:.0f}%  ({_bytes_auto(disk.used)} / {_bytes_auto(disk.total)})"))
         lines.append(kv("Uptime:", f"{d}д {h:02d}:{m:02d}"))
     except ImportError:
         # Резервный сбор метрик через стандартную библиотеку и /proc (на Linux)
@@ -179,13 +179,13 @@ def _sys_info(state: AppState | None = None) -> list[str]:
                     m_cached = meminfo.get("Cached", 0)
                     m_used = m_total - m_free - m_buffers - m_cached
                     m_pct = (m_used / m_total) * 100 if m_total > 0 else 0
-                    mem_str = f"{_bar(m_used, m_total, 12)} {m_pct:.0f}%  ({_bytes_auto(m_used)} / {_bytes_auto(m_total)})"
+                    mem_str = f"{m_pct:.0f}%  ({_bytes_auto(m_used)} / {_bytes_auto(m_total)})"
             
             if load_str != "—":
                 lines.append(kv("Load Avg:", load_str))
             if mem_str != "—":
                 lines.append(kv("RAM:", mem_str))
-            lines.append(kv("Диск:", f"{_bar(used_d, total_d, 12)} {disk_pct:.0f}%  ({_bytes_auto(used_d)} / {_bytes_auto(total_d)})"))
+            lines.append(kv("Диск:", f"{disk_pct:.0f}%  ({_bytes_auto(used_d)} / {_bytes_auto(total_d)})"))
             if uptime_str != "—":
                 lines.append(kv("Uptime:", uptime_str))
         except Exception:
@@ -1093,11 +1093,10 @@ def menu_monitoring(state: AppState):
             [("1", "📊 Трафик по протоколам", "Общий объем трафика по типам подключений"),
              ("2", "👥 Трафик по пользователям", "Детальная таблица потребления лимитов клиентов"),
              ("3", "🔌 Активные подключения", "Сессии пользователей в реальном времени"),
-             ("4", "🚦 Статус протоколов", "Порты и состояние запущенных служб"),
-             ("5", "📈 Живой монитор CPU/RAM", "Нагрузка системы, скорость сети и метрики"),
-             ("6", "📋 Просмотр системных логов", "Sing-Box, Sync-Agent, Fail2ban и др."),
-             ("7", "🔄 Управление Sync Agent", "Контроль фоновой службы синхронизации"),
-             ("8", "⚙️ Настройки Clash API", "Локальный порт и секретный ключ статистики"),
+             ("4", "📈 Живой монитор CPU/RAM", "Нагрузка системы, скорость сети и метрики"),
+             ("5", "📋 Просмотр системных логов", "Sing-Box, Sync-Agent, Fail2ban и др."),
+             ("6", "🔄 Управление Sync Agent", "Контроль фоновой службы синхронизации"),
+             ("7", "⚙️ Настройки Clash API", "Локальный порт и секретный ключ статистики"),
              ("0", "↩ Назад", "")],
             "МОНИТОРИНГ",
         )
@@ -1110,14 +1109,12 @@ def menu_monitoring(state: AppState):
         elif choice == "3":
             _show_connections(state)
         elif choice == "4":
-            _show_status()
-        elif choice == "5":
             _show_realtime_sys_monitor()
-        elif choice == "6":
+        elif choice == "5":
             _menu_logs(state)
-        elif choice == "7":
+        elif choice == "6":
             _menu_sync_agent(state)
-        elif choice == "8":
+        elif choice == "7":
             _menu_clash_api(state)
 
 
@@ -1375,11 +1372,13 @@ def _read_proc_net() -> tuple[int, int]:
         with open("/proc/net/dev", "r") as f:
             lines = f.readlines()
             for line in lines[2:]:
-                parts = line.split()
-                if len(parts) >= 10:
-                    if parts[0].startswith("lo:"):
-                        continue
-                    rx += int(parts[1])
+                if ":" not in line:
+                    continue
+                if "lo:" in line:
+                    continue
+                parts = line.split(":", 1)[1].split()
+                if len(parts) >= 9:
+                    rx += int(parts[0])
                     tx += int(parts[8])
         return rx, tx
     except Exception:
