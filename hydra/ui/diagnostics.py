@@ -593,11 +593,10 @@ def menu_diagnostics(state: AppState):
             ("2", "🛡️ Censorcheck (геоблок)", "Проверка геоблока сайтов и сервисов"),
             ("3", "🛡️ Censorcheck (DPI РФ)", "Проверка DPI блокировок на серверах РФ"),
             ("4", "⚡ Тест скорости до РФ (iPerf3)", "Нативный замер скорости скачивания и выгрузки"),
-            ("5", "🚀 YABS (Yet Another Bench Script)", "Комплексный бенчмарк (стриминг fio, cpu, iperf)"),
-            ("6", "🔒 Блокировки зарубежными сервисами", "Проверка IP сервера на зарубежные блокировки"),
-            ("7", "📊 Bench.sh (Параметры сервера)", "Замер скорости к зарубежным провайдерам"),
-            ("8", "🛡️ IPQuality (Check.Place -EI)", "Детальная проверка качества IP и VPN/Proxy детекта"),
-            ("9", "💻 Тест процессора (sysbench)", "Нативный тест производительности CPU"),
+            ("5", "🔒 Блокировки зарубежными сервисами", "Проверка IP сервера на зарубежные блокировки"),
+            ("6", "📊 Bench.sh (Параметры сервера)", "Замер скорости к зарубежным провайдерам"),
+            ("7", "🛡️ IPQuality (Check.Place -EI)", "Детальная проверка качества IP и VPN/Proxy детекта"),
+            ("8", "💻 Тест процессора (sysbench)", "Нативный тест производительности CPU"),
             ("0", "↩ Назад", "")
         ], "ВЫБОР ДИАГНОСТИЧЕСКОГО ТЕСТА")
         
@@ -612,22 +611,15 @@ def menu_diagnostics(state: AppState):
         elif choice == "4":
             test_iperf3_ru()
         elif choice == "5":
-            try:
-                # YABS запускаем стримингом
-                run_streaming_cmd("YABS Benchmark", "curl -sL yabs.sh | bash -s -- -4")
-            except KeyboardInterrupt:
-                pass
-            prompt("Нажмите Enter...")
-        elif choice == "6":
             test_ip_quality(interactive=False)
-        elif choice == "7":
+        elif choice == "6":
             try:
                 # Bench.sh запускаем стримингом
                 run_streaming_cmd("Bench.sh Benchmark", "wget -qO- bench.sh | bash")
             except KeyboardInterrupt:
                 pass
             prompt("Нажмите Enter...")
-        elif choice == "8":
+        elif choice == "7":
             test_ip_quality(interactive=True)
-        elif choice == "9":
+        elif choice == "8":
             test_cpu_sysbench()
