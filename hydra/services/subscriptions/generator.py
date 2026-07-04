@@ -326,11 +326,37 @@ def generate_base64_sub(user: User, state: AppState) -> str:
     links = generate_links(user, state)
     extended_links: list[str] = []
     
+    # Сначала преобразуем стандартные ссылки, добавляя красивый суффикс протокола в тэг
+    formatted_links = []
+    for link in links:
+        try:
+            parsed = urllib.parse.urlparse(link)
+            scheme = parsed.scheme.lower()
+            
+            proto_suffix = ""
+            if scheme in ("naive", "naive+quic", "naive+https"):
+                proto_suffix = "NaiveProxy"
+            elif scheme == "anytls":
+                proto_suffix = "AnyTLS"
+            elif scheme in ("tt", "trusttunnel"):
+                proto_suffix = "TrustTunnel"
+            elif scheme == "mierus":
+                proto_suffix = "Mieru"
+                
+            if proto_suffix:
+                # Обновляем фрагмент (тэг) ссылки
+                tag = f"{user.email} {proto_suffix}"
+                parsed = parsed._replace(fragment=urllib.parse.quote(tag))
+                link = urllib.parse.urlunparse(parsed)
+        except Exception:
+            pass
+        formatted_links.append(link)
+        
     # Добавляем стандартные ссылки
-    extended_links.extend(links)
+    extended_links.extend(formatted_links)
     
     # Конвертируем стандартные в sn:// где применимо
-    for link in links:
+    for link in formatted_links:
         sn_link = clean_link_to_sn(link, user)
         if sn_link:
             extended_links.append(sn_link)
