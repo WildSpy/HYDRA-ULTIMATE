@@ -394,7 +394,8 @@ def _run_install(state: AppState, plugin) -> None:
         return
 
     info("Записываю конфигурационные файлы...")
-    # Запуск оркестратора для пересборки конфигов
+    plugin.configure(state)
+    plugin.apply(state)
     if orchestrator.apply_config(state):
         success("Установка успешно завершена!")
         # Дополнительно: оптимизация ядра sysctl
@@ -508,6 +509,8 @@ def _menu_singbox_integration(state: AppState, plugin) -> None:
         ps.config["singbox_integration_enabled"] = not sb_int
         save_state(state)
         info("Применяю изменения...")
+        plugin.configure(state)
+        plugin.apply(state)
         if orchestrator.apply_config(state):
             success("Конфигурация обновлена!")
         else:
@@ -522,6 +525,8 @@ def _menu_singbox_integration(state: AppState, plugin) -> None:
                 ps.config["singbox_integration_port"] = p
                 save_state(state)
                 info("Применяю изменения...")
+                plugin.configure(state)
+                plugin.apply(state)
                 if orchestrator.apply_config(state):
                     success("Порт перехвата обновлен!")
                 else:
@@ -590,6 +595,8 @@ def _menu_fallback(state: AppState, plugin) -> None:
                 
             save_state(state)
             info("Перезаписываю конфигурацию...")
+            plugin.configure(state)
+            plugin.apply(state)
             if orchestrator.apply_config(state):
                 success("Настройки успешно изменены!")
             else:
@@ -678,6 +685,8 @@ def _menu_update_tg_nets(state: AppState, plugin) -> None:
                 # Перезапускаем правила роутинга
                 sr_mod.disable()
                 # Применение новых правил произойдет при apply() плагина
+                plugin.configure(state)
+                plugin.apply(state)
                 if orchestrator.apply_config(state):
                     success("Диапазоны обновлены и применены к фаерволу!")
                 else:
