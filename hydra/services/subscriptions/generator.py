@@ -382,7 +382,10 @@ def generate_userinfo_header(user: User, state: AppState) -> str:
     if user.expiry_date:
         try:
             from datetime import datetime
-            dt = datetime.fromisoformat(user.expiry_date)
+            dt_str = user.expiry_date
+            if dt_str.endswith("Z"):
+                dt_str = dt_str[:-1] + "+00:00"
+            dt = datetime.fromisoformat(dt_str)
             expire = int(dt.timestamp())
         except Exception:
             pass
@@ -538,7 +541,9 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Disposition", f'attachment; filename="hydra-{user.email}-sub.txt"')
         self.send_header("Subscription-Userinfo", userinfo)
+        self.send_header("subscription-userinfo", userinfo)
         self.send_header("Profile-Update-Interval", "6")
+        self.send_header("profile-update-interval", "6")
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(content.encode("utf-8"))
