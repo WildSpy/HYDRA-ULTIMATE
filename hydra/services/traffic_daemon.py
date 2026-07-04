@@ -61,10 +61,10 @@ def run_daemon() -> None:
             pass
         return port_to_user
 
-    def _get_trusttunnel_users() -> dict[str, str]:
+    def _get_trusttunnel_users() -> dict[tuple[str, str], str]:
         import subprocess
         import re
-        id_to_user = {}
+        addr_to_user = {}
         try:
             r = subprocess.run(
                 ["journalctl", "-u", "sing-box", "-n", "1000", "--no-pager"],
@@ -75,17 +75,20 @@ def run_daemon() -> None:
                     if "inbound/trusttunnel" not in line:
                         continue
                     
-                    match_id = re.search(r"INFO\s+\[(\d+)\s+[^\]]+\]", line)
-                    if not match_id:
-                        continue
-                    conn_id = match_id.group(1)
-                    
-                    match_user = re.search(r"inbound/trusttunnel\[[^\]]+\]:\s+\[([^\]]+)\]\s+inbound connection", line)
-                    if match_user:
-                        id_to_user[conn_id] = match_user.group(1)
+                    # Ищем имя пользователя и цель, например:
+                    # [tester2] inbound connection to speedtest-nl.vdsina.ru:8080
+                    m = re.search(
+                        r"inbound/trusttunnel\[[^\]]+\]:\s+\[([^\]]+)\]\s+inbound connection to\s+([a-zA-Z0-9\-\._]+|\[[0-9a-fA-F:]+\]):(\d+)",
+                        line
+                    )
+                    if m:
+                        user = m.group(1)
+                        host = m.group(2)
+                        port = m.group(3)
+                        addr_to_user[(host.lower(), port)] = user
         except Exception:
             pass
-        return id_to_user
+        return addr_to_user
 
     _log("Traffic daemon started")
 
@@ -136,7 +139,9 @@ def run_daemon() -> None:
                     if not user and "anytls" in tag:
                         user = anytls_ports.get(sport)
                     if not user and "trusttunnel" in tag:
-                        user = trusttunnel_users.get(cid)
+                        host = meta.get("host") or meta.get("destinationIP", "")
+                        dport = str(meta.get("destinationPort", ""))
+                        user = trusttunnel_users.get((host.lower(), dport))
                     up = c.get("upload", 0)
                     down = c.get("download", 0)
                     summary.append(f"ID={cid}, User={user}, Tag={tag}, Rx={down}, Tx={up}")
@@ -174,7 +179,9 @@ def run_daemon() -> None:
                         email = anytls_ports[sport]
 
                 if not email and protocol == "trusttunnel":
-                    email = trusttunnel_users.get(conn_id)
+                    host = metadata.get("host") or metadata.get("destinationIP", "")
+                    dport = str(metadata.get("destinationPort", ""))
+                    email = trusttunnel_users.get((host.lower(), dport))
 
                 if not email:
                     continue

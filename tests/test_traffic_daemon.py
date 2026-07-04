@@ -202,7 +202,7 @@ def test_daemon_collects_trusttunnel_traffic_using_journalctl():
     mock_resp.__enter__.return_value = mock_resp
     
     fake_journal = """
-Jul 03 19:42:56 sing-box[222339]: INFO [1284697157 0ms] inbound/trusttunnel[trusttunnel-in]: [tester_tt@example.com] inbound connection from 95.84.12.34:54321
+Jul 03 19:42:56 sing-box[222339]: +0300 2026-07-03 19:42:56 INFO inbound/trusttunnel[trusttunnel-in]: [tester_tt@example.com] inbound connection to google.com:443
 """
     
     mock_sub = MagicMock()
