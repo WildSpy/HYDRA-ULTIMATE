@@ -315,12 +315,12 @@ def test_iperf3_ru():
         sys.stdout.flush()
 
     print(f"  {CYAN}╔{'═' * 76}╗{NC}")
-    print_row("Сервер", ("Скачивание", BOLD), ("Выгрузка", BOLD), ("Пинг", BOLD))
+    print_row("Сервер", ("↓ Download", BOLD), ("↑ Upload", BOLD), ("Ping", BOLD))
     print(f"  {CYAN}╠{'═' * 76}╣{NC}")
     
     try:
         for city, cfg in SERVERS.items():
-            print_row(city, ("Подключение...", YELLOW), ("", ""), ("—", ""), end_char="\r")
+            print_row(city, ("Connecting...", YELLOW), ("", ""), ("—", ""), end_char="\r")
             
             def try_host(host):
                 target_port = None
@@ -333,14 +333,14 @@ def test_iperf3_ru():
                     
                 ping_val = get_ping(host)
                 
-                print_row(city, ("Скачивание...", CYAN), ("", ""), (ping_val, ""), end_char="\r")
+                print_row(city, ("Download...", CYAN), ("", ""), (ping_val, ""), end_char="\r")
                 down_speed = run_speed(host, target_port, reverse=True)
                 
                 # Если тест скачивания выдал 0.0 (занят или ошибка), пробуем резервный
                 if down_speed == 0.0:
                     return None
                     
-                print_row(city, (f"{down_speed:.1f} Mbps", GREEN), ("Выгрузка...", CYAN), (ping_val, ""), end_char="\r")
+                print_row(city, (f"{down_speed:.1f} Mbps", GREEN), ("Upload...", CYAN), (ping_val, ""), end_char="\r")
                 up_speed = run_speed(host, target_port, reverse=False)
                 
                 return down_speed, up_speed, ping_val
@@ -350,14 +350,14 @@ def test_iperf3_ru():
             
             # Если не вышло, пробуем резервный
             if res is None:
-                print_row(city, ("Резервный...", YELLOW), ("", ""), ("—", ""), end_char="\r")
+                print_row(city, ("Fallback...", YELLOW), ("", ""), ("—", ""), end_char="\r")
                 res = try_host(cfg["fallback"])
                 
             if res is not None:
                 down_speed, up_speed, ping_val = res
                 print_row(city, (f"{down_speed:.1f} Mbps", GREEN), (f"{up_speed:.1f} Mbps", GREEN), (ping_val, ""), end_char="\n")
             else:
-                print_row(city, ("Недоступен", RED), ("Недоступен", RED), ("—", RED), end_char="\n")
+                print_row(city, ("Unavailable", RED), ("Unavailable", RED), ("—", RED), end_char="\n")
             
         print(f"  {CYAN}╚{'═' * 76}╝{NC}")
         
