@@ -486,6 +486,118 @@ def test_cpu_sysbench():
     prompt("Нажмите Enter для возврата...")
 
 
+def test_bench_speedtest():
+    """Тест 5. Тест скорости до зарубежных серверов (вместо Bench.sh)"""
+    clear()
+    title("Тест скорости до зарубежных серверов (Global)")
+    print()
+    
+    if not ensure_packages(["ping"]):
+        return
+        
+    NODES = [
+        {"city": "Atlanta, GA, US", "provider": "Linode", "url": "http://speedtest.atlanta.linode.com/100MB-atlanta.bin"},
+        {"city": "Dallas, TX, US", "provider": "Enzu", "url": "https://speedtest.dfw1.enzu.com/100MB.bin"},
+        {"city": "Seattle, WA, US", "provider": "Datapacket", "url": "http://sea.download.datapacket.com/100mb.bin"},
+        {"city": "San Francisco, CA, US", "provider": "HelioHost", "url": "http://heliohost.org/speedtest/100MB.bin"},
+        {"city": "Washington, DC, US", "provider": "Leaseweb", "url": "http://speedtest.was1.us.leaseweb.net/100mb.bin"},
+        {"city": "Sao Paulo, Brazil", "provider": "Linode", "url": "http://speedtest.sao-paulo.linode.com/100MB-sao-paulo.bin"},
+        {"city": "Serangoon, Singapore", "provider": "Leaseweb", "url": "http://speedtest.sin1.sg.leaseweb.net/100mb.bin"},
+        {"city": "Taipei, Taiwan", "provider": "Hinet", "url": "http://tpdb.speed2.hinet.net/test_100m.zip"},
+        {"city": "Tokyo, Japan", "provider": "Linode", "url": "http://speedtest.tokyo2.linode.com/100MB-tokyo2.bin"},
+        {"city": "Nuremberg, Germany", "provider": "Hetzner", "url": "https://nbg1-speed.hetzner.com/100MB.bin"},
+        {"city": "Rotterdam, Netherlands", "provider": "id3.net", "url": "http://mirror.i3d.net/100mb.bin"},
+        {"city": "Amsterdam, Netherlands", "provider": "Leaseweb", "url": "http://speedtest.ams1.nl.leaseweb.net/100mb.bin"},
+        {"city": "Milan, Italy", "provider": "Linode", "url": "http://speedtest.milan.linode.com/100MB-milan.bin"},
+        {"city": "Sydney, AU", "provider": "Datapacket", "url": "https://syd.download.datapacket.com/100mb.bin"},
+    ]
+    
+    import urllib.request
+    from urllib.parse import urlparse
+    
+    def get_ping(host):
+        try:
+            r = subprocess.run(["ping", "-c", "3", "-W", "2", host], capture_output=True, text=True, timeout=4)
+            match = re.search(r"rtt min/avg/max/mdev = [\d\.]+/(?P<avg>[\d\.]+)/[\d\.]+/[\d\.]+", r.stdout)
+            if match:
+                return f"{float(match.group('avg')):.1f} ms"
+        except Exception:
+            pass
+        return "N/A"
+
+    def run_http_speed(url):
+        try:
+            start_time = time.time()
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=3.0) as response:
+                bytes_downloaded = 0
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    bytes_downloaded += len(chunk)
+                    elapsed = time.time() - start_time
+                    if elapsed >= 4.0:
+                        break
+                if elapsed == 0:
+                    return 0.0
+                speed_bps = (bytes_downloaded * 8) / elapsed
+                return speed_bps / 1_000_000 # В Mbps
+        except Exception:
+            return 0.0
+
+    def print_row(loc, prov, speed_tuple, ping_tuple, end_char="\n"):
+        val_speed, col_speed = speed_tuple
+        val_ping, col_ping = ping_tuple
+        
+        p_speed = f"{val_speed:<14}"
+        p_ping = f"{val_ping:<11}"
+        
+        c_speed = f"{col_speed}{p_speed}{NC}"
+        c_ping = f"{col_ping}{p_ping}{NC}"
+        
+        line = f" {loc:<25} │ {prov:<14} │ {c_speed} │ {c_ping}  "
+        sys.stdout.write(f"  {CYAN}║{NC}{line}{CYAN}║{NC}{end_char}")
+        sys.stdout.flush()
+
+    print(f"  {CYAN}╔{'═' * 76}╗{NC}")
+    print_row("Локация", "Провайдер", ("↓ Speed", BOLD), ("Ping", BOLD))
+    print(f"  {CYAN}╠{'═' * 76}╣{NC}")
+    
+    try:
+        for node in NODES:
+            loc = node["city"]
+            prov = node["provider"]
+            url = node["url"]
+            
+            print_row(loc, prov, ("Connecting...", YELLOW), ("—", ""), end_char="\r")
+            
+            host = urlparse(url).hostname
+            ping_val = get_ping(host)
+            
+            print_row(loc, prov, ("Download...", CYAN), (ping_val, ""), end_char="\r")
+            speed_mbps = run_http_speed(url)
+            
+            if speed_mbps > 0.0:
+                if speed_mbps >= 1000:
+                    speed_str = f"{speed_mbps/1000:.1f} Gbps"
+                else:
+                    speed_str = f"{speed_mbps:.1f} Mbps"
+                print_row(loc, prov, (speed_str, GREEN), (ping_val, ""), end_char="\n")
+            else:
+                print_row(loc, prov, ("Unavailable", RED), (ping_val, RED), end_char="\n")
+                
+        print(f"  {CYAN}╚{'═' * 76}╝{NC}")
+        
+    except KeyboardInterrupt:
+        sys.stdout.write("\r" + " " * 80 + "\r")
+        print(f"  {CYAN}╚{'═' * 76}╝{NC}")
+        print(f"\n  {RED}[!] Тест скорости прерван.{NC}")
+        
+    print()
+    prompt("Нажмите Enter для возврата...")
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  Главное меню раздела диагностики
 # ═════════════════════════════════════════════════════════════════════════════
@@ -514,7 +626,7 @@ def menu_diagnostics(state: AppState):
             ("2", "🛡️ Censorcheck (геоблок)", "Проверка геоблока сайтов и сервисов"),
             ("3", "🛡️ Censorcheck (DPI РФ)", "Проверка DPI блокировок на серверах РФ"),
             ("4", "⚡ Тест скорости до РФ (iPerf3)", "Нативный замер скорости скачивания и выгрузки"),
-            ("5", "📊 Bench.sh (Параметры сервера)", "Замер скорости к зарубежным провайдерам"),
+            ("5", "🌐 Тест скорости: Мир (Bench.sh)", "Замер скорости скачивания к глобальным провайдерам"),
             ("6", "💻 Тест процессора (sysbench)", "Нативный тест производительности CPU"),
             ("0", "↩ Назад", "")
         ], "ВЫБОР ДИАГНОСТИЧЕСКОГО ТЕСТА")
@@ -530,8 +642,6 @@ def menu_diagnostics(state: AppState):
         elif choice == "4":
             test_iperf3_ru()
         elif choice == "5":
-            run_direct_cmd("Bench.sh Benchmark", "wget -qO- bench.sh | bash")
-            print()
-            prompt("Нажмите Enter...")
+            test_bench_speedtest()
         elif choice == "6":
             test_cpu_sysbench()
