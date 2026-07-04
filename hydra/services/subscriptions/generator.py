@@ -339,7 +339,7 @@ def generate_base64_sub(user: User, state: AppState) -> str:
             elif scheme == "mierus":
                 proto_suffix = "Mieru"
                 
-            if proto_suffix and scheme != "mierus":
+            if proto_suffix:
                 # Обновляем фрагмент (тэг) ссылки
                 tag = f"{user.email} {proto_suffix}"
                 parsed = parsed._replace(fragment=urllib.parse.quote(tag))
