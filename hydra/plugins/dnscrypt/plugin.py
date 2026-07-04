@@ -12,7 +12,13 @@ from pathlib import Path
 from hydra.plugins.base import BasePlugin, PluginMeta, PluginStatus, PluginCategory, ConfigFragment
 from hydra.core.state import AppState
 
-DNSCRYPT_BIN = Path("/usr/bin/dnscrypt-proxy")
+def get_dnscrypt_bin() -> Path:
+    for p in ["/usr/sbin/dnscrypt-proxy", "/usr/bin/dnscrypt-proxy"]:
+        path = Path(p)
+        if path.exists():
+            return path
+    return Path("/usr/sbin/dnscrypt-proxy")
+
 DNSCRYPT_CONF = Path("/etc/dnscrypt-proxy/dnscrypt-proxy.toml")
 DNSCRYPT_PORT = 5300
 
@@ -98,7 +104,7 @@ use_syslog = true
 
     @staticmethod
     def _installed() -> bool:
-        return DNSCRYPT_BIN.exists()
+        return Path("/usr/sbin/dnscrypt-proxy").exists() or Path("/usr/bin/dnscrypt-proxy").exists()
 
     def traffic(self, state: AppState) -> dict[str, int]:
         return {}

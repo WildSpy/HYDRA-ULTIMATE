@@ -108,3 +108,32 @@ def test_dnscrypt_on_enable_disable(mock_write_config, mock_run):
     assert state.network.dnscrypt_enabled is False
     mock_run.assert_any_call(["systemctl", "stop", "dnscrypt-proxy"], capture_output=True)
     mock_run.assert_any_call(["systemctl", "disable", "dnscrypt-proxy"], capture_output=True)
+
+
+def test_get_dnscrypt_bin():
+    from hydra.plugins.dnscrypt.plugin import get_dnscrypt_bin
+    
+    # Имя файла проверяется с прямыми и обратными слешами для поддержки Windows путей в тестах
+    def _is_sbin(p):
+        s = str(p).replace("\\", "/")
+        return s.endswith("/usr/sbin/dnscrypt-proxy")
+        
+    def _is_bin(p):
+        s = str(p).replace("\\", "/")
+        return s.endswith("/usr/bin/dnscrypt-proxy")
+
+    with patch("hydra.plugins.dnscrypt.plugin.Path.exists", autospec=True) as mock_exists:
+        # 1. Если есть в /usr/sbin
+        mock_exists.side_effect = lambda self_path: _is_sbin(self_path)
+        assert _is_sbin(get_dnscrypt_bin())
+        
+    with patch("hydra.plugins.dnscrypt.plugin.Path.exists", autospec=True) as mock_exists:
+        # 2. Если есть в /usr/bin
+        mock_exists.side_effect = lambda self_path: _is_bin(self_path)
+        assert _is_bin(get_dnscrypt_bin())
+        
+    with patch("hydra.plugins.dnscrypt.plugin.Path.exists", autospec=True) as mock_exists:
+        # 3. Если нет нигде
+        mock_exists.return_value = False
+        assert _is_sbin(get_dnscrypt_bin())
+

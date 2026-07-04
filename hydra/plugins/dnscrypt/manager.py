@@ -18,7 +18,7 @@ from hydra.ui.tui import (
     RED, GREEN, YELLOW, CYAN, BLUE, MAGENTA, BOLD, DIM, WHITE, NC
 )
 import hydra.core.orchestrator as orchestrator
-from hydra.plugins.dnscrypt.plugin import DNSCRYPT_CONF, DNSCRYPT_PORT, DNSCRYPT_BIN
+from hydra.plugins.dnscrypt.plugin import DNSCRYPT_CONF, DNSCRYPT_PORT, get_dnscrypt_bin
 
 
 def _get_current_server_names() -> list[str]:
@@ -106,10 +106,11 @@ def _fetch_resolver_list() -> tuple[list[str], bool]:
         tmp_conf = None
 
     conf = tmp_conf if tmp_conf else str(DNSCRYPT_CONF)
+    dnscrypt_bin = get_dnscrypt_bin()
 
     try:
         r = subprocess.run(
-            [str(DNSCRYPT_BIN), "-config", conf, "-list", "-sort", "rtt"],
+            [str(dnscrypt_bin), "-config", conf, "-list", "-sort", "rtt"],
             capture_output=True, text=True, timeout=60,
         )
         names = _parse_names(r.stdout)
@@ -117,7 +118,7 @@ def _fetch_resolver_list() -> tuple[list[str], bool]:
             return names, True
 
         r = subprocess.run(
-            [str(DNSCRYPT_BIN), "-config", conf, "-list"],
+            [str(dnscrypt_bin), "-config", conf, "-list"],
             capture_output=True, text=True, timeout=30,
         )
         names = _parse_names(r.stdout)
