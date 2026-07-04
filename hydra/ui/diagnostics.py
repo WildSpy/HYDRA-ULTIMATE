@@ -440,112 +440,7 @@ def test_iperf3_ru():
     prompt("Нажмите Enter для возврата...")
 
 
-def test_ip_quality(interactive: bool = False):
-    """Тест 5 и 7. Проверка IP на блокировки и IPQuality (Check.Place) с парсингом в HYDRA TUI"""
-    clear()
-    test_title = "IPQuality (Check.Place -f)" if interactive else "Блокировки зарубежными сервисами (IP.Check.Place)"
-    title(f"Тестирование: {test_title}")
-    print()
-    
-    if not ensure_packages(["curl", "jq", "bc", "netcat-openbsd", "dnsutils"]):
-        return
-        
-    cmd_args = "-j -l en -y"
-    if interactive:
-        # Для полного теста качества IP используем флаг -f
-        cmd_args = "-j -l en -y -f"
-        
-    try:
-        stdout = run_with_spinner("Анализ репутации IP", f"bash <(curl -Ls https://IP.Check.Place) {cmd_args}")
-        
-        # Находим JSON в выводе (на случай если curl или bash выдаст предупреждения)
-        start = stdout.find("{")
-        end = stdout.rfind("}")
-        if start != -1 and end != -1:
-            data = json.loads(stdout[start:end+1])
-        else:
-            data = json.loads(stdout)
-            
-        lines = []
-        
-        # 1. Сводная инфа об IP
-        head = data.get("Head", {})
-        info_sec = data.get("Info", {})
-        
-        lines.append(f"  {BOLD}Информация об IP:{NC}")
-        lines.append("────────────────────────────────────────────────────────")
-        lines.append(kv("IP-адрес:", head.get("IP", "N/A")))
-        lines.append(kv("Тип IP:", info_sec.get("Type", "N/A")))
-        lines.append(kv("Организация:", info_sec.get("Organization", "N/A")))
-        
-        region = info_sec.get("Region", {})
-        if region:
-            lines.append(kv("Регион:", f"{region.get('Name', 'N/A')} ({region.get('Code', 'N/A')})"))
-        lines.append(kv("Временная зона:", info_sec.get("TimeZone", "N/A")))
-        
-        # 2. Оценки фрода / Risk Scores
-        score = data.get("Score", {})
-        if score:
-            lines.append("")
-            lines.append(f"  {BOLD}Оценки рисков фрода (Risk Scores):{NC}")
-            lines.append("────────────────────────────────────────────────────────")
-            for db, val in score.items():
-                if val is not None and str(val).lower() != "null":
-                    try:
-                        clean_val = str(val).replace("%", "").strip()
-                        val_num = float(clean_val)
-                        if val_num > 50:
-                            val_str = f"{RED}{val}{NC}"
-                        elif val_num > 20:
-                            val_str = f"{YELLOW}{val}{NC}"
-                        else:
-                            val_str = f"{GREEN}{val}{NC}"
-                    except ValueError:
-                        val_str = f"{GREEN}{val}{NC}" if str(val).lower() in ("0", "clean", "low") else f"{YELLOW}{val}{NC}"
-                    lines.append(kv(f"{db}:", val_str))
-                    
-        # 3. Факторы угроз (Proxy, VPN, Tor)
-        factor = data.get("Factor", {})
-        if factor:
-            lines.append("")
-            lines.append(f"  {BOLD}Угрозы и классификация IP (Threat Factors):{NC}")
-            lines.append("────────────────────────────────────────────────────────")
-            for k, v in factor.items():
-                if v is not None and str(v).lower() != "null":
-                    v_str = str(v).lower()
-                    if v_str in ("yes", "true", "1"):
-                        v_colored = f"{RED}Да (Обнаружено){NC}"
-                    elif v_str in ("no", "false", "0"):
-                        v_colored = f"{GREEN}Нет (Чисто){NC}"
-                    else:
-                        v_colored = f"{YELLOW}{v}{NC}"
-                    lines.append(kv(f"{k}:", v_colored))
-                    
-        # 4. Стриминг и ИИ (Media)
-        media = data.get("Media", {})
-        if media:
-            lines.append("")
-            lines.append(f"  {BOLD}Доступ к медиаресурсам:{NC}")
-            lines.append("────────────────────────────────────────────────────────")
-            for k, v in media.items():
-                if v is not None and str(v).lower() != "null":
-                    v_str = str(v).lower()
-                    if v_str in ("yes", "true", "available", "original"):
-                        v_colored = f"{GREEN}Доступен / Разблокирован{NC}"
-                    elif v_str in ("no", "false", "blocked"):
-                        v_colored = f"{RED}Заблокирован{NC}"
-                    else:
-                        v_colored = f"{YELLOW}{v}{NC}"
-                    lines.append(kv(f"{k}:", v_colored))
-                    
-        panel("🛡️  Репутация и Качество IP", lines)
-        
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        error(f"Не удалось выполнить тест: {e}")
-        
-    prompt("Нажмите Enter для возврата...")
+# test_ip_quality удален
 
 
 def test_cpu_sysbench():
@@ -619,10 +514,8 @@ def menu_diagnostics(state: AppState):
             ("2", "🛡️ Censorcheck (геоблок)", "Проверка геоблока сайтов и сервисов"),
             ("3", "🛡️ Censorcheck (DPI РФ)", "Проверка DPI блокировок на серверах РФ"),
             ("4", "⚡ Тест скорости до РФ (iPerf3)", "Нативный замер скорости скачивания и выгрузки"),
-            ("5", "🔒 Блокировки зарубежными сервисами", "Проверка IP сервера на зарубежные блокировки"),
-            ("6", "📊 Bench.sh (Параметры сервера)", "Замер скорости к зарубежным провайдерам"),
-            ("7", "🛡️ IPQuality (Check.Place -EI)", "Детальная проверка качества IP и VPN/Proxy детекта"),
-            ("8", "💻 Тест процессора (sysbench)", "Нативный тест производительности CPU"),
+            ("5", "📊 Bench.sh (Параметры сервера)", "Замер скорости к зарубежным провайдерам"),
+            ("6", "💻 Тест процессора (sysbench)", "Нативный тест производительности CPU"),
             ("0", "↩ Назад", "")
         ], "ВЫБОР ДИАГНОСТИЧЕСКОГО ТЕСТА")
         
@@ -637,12 +530,8 @@ def menu_diagnostics(state: AppState):
         elif choice == "4":
             test_iperf3_ru()
         elif choice == "5":
-            test_ip_quality(interactive=False)
-        elif choice == "6":
             run_direct_cmd("Bench.sh Benchmark", "wget -qO- bench.sh | bash")
             print()
             prompt("Нажмите Enter...")
-        elif choice == "7":
-            test_ip_quality(interactive=True)
-        elif choice == "8":
+        elif choice == "6":
             test_cpu_sysbench()
