@@ -159,6 +159,7 @@ class TelemtPlugin(BasePlugin):
         # 1. Fallback конфигурация
         ps = state.protocols.setdefault("telemt", state.protocols.get("telemt") or PluginState())
         cfg = ps.config or {}
+        port = cfg.get("port", DEFAULT_PORT)
         fallback_cfg_dict = cfg.get("fallback_cfg")
         if fallback_cfg_dict:
             try:
@@ -197,6 +198,13 @@ class TelemtPlugin(BasePlugin):
             subprocess.run(["systemctl", "restart", "cron"], capture_output=True)
         except Exception as e:
             print(f"  [telemt] Ошибка создания задания cron: {e}")
+
+        # 5. Инициализация iptables-учёта трафика
+        try:
+            from hydra.plugins.telemt.mtproto_stats import setup_iptables_accounting
+            setup_iptables_accounting(port)
+        except Exception as e:
+            print(f"  [telemt] Ошибка настройки iptables-учёта: {e}")
 
         time.sleep(2)
         return True
