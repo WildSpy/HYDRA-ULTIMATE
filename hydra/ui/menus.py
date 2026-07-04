@@ -392,10 +392,10 @@ def main_menu(state: AppState):
 
         lines = [
             kv("Sing-Box:", f"{_ok(sb_ok)}  {singbox_version() or 'не установлен'}"),
-            kv("Транспорты:", f"{GREEN}{active_t}{NC}/{total_t} активны"),
-            kv("Службы сети:", f"{GREEN}{active_e}{NC}/{total_e} активны"),
+            kv("Протоколы:", f"{GREEN}{active_t}{NC}/{total_t} активны"),
+            kv("Сетевые службы:", f"{GREEN}{active_e}{NC}/{total_e} активны"),
             kv("Безопасность:", f"{GREEN}{active_s}{NC}/{total_s} активны"),
-            kv("Пользователей:", f"{GREEN if u_active else YELLOW}{u_active}{NC} из {len(state.users)}"),
+            kv("Пользователи:", f"{GREEN if u_active else YELLOW}{u_active}{NC} из {len(state.users)}"),
         ]
         lines += _sys_info(state)
         panel("Состояние", lines)
