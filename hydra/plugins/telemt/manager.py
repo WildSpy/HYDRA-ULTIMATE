@@ -221,6 +221,8 @@ def menu_telemt(state: AppState, plugin) -> None:
         if_mod = _get_ios_fix_module()
         if if_mod and CONFIG_FILE.exists():
             status_lines.append(f"  iOS-фикс:    {if_mod.ios_fix_status_line()}")
+            
+        status_lines.append(f"  Автор:       {DIM}inferno1978{NC}")
 
         panel("🛡️ TELEMT CONTROL PANEL", status_lines)
 
