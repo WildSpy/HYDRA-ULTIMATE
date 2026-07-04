@@ -394,10 +394,20 @@ def get_subscription_url(user: User, state: AppState) -> str:
 
 def find_any_cert(state: AppState) -> tuple[Optional[str], Optional[str]]:
     """Поиск существующего TLS-сертификата в системе."""
-    domains = []
     sub_domain = getattr(state.network, "sub_domain", "")
     if sub_domain:
-        domains.append(sub_domain)
+        # Если задан выделенный домен для подписок, ищем сертификат СТРОГО для него
+        paths = [
+            (f"/etc/letsencrypt/live/{sub_domain}/fullchain.pem", f"/etc/letsencrypt/live/{sub_domain}/privkey.pem"),
+            (f"/etc/xray/{sub_domain}.crt", f"/etc/xray/{sub_domain}.key"),
+        ]
+        for cert, key in paths:
+            if Path(cert).exists() and Path(key).exists():
+                return cert, key
+        return None, None
+
+    # Иначе ищем сертификат основного домена или другие
+    domains = []
     if state.network.domain:
         domains.append(state.network.domain)
         
@@ -421,6 +431,7 @@ def find_any_cert(state: AppState) -> tuple[Optional[str], Optional[str]]:
         return fallback
         
     return None, None
+
 
 # ── HTTP Server ───────────────────────────────────────────────────────────────
 
