@@ -36,17 +36,22 @@ def test_dnscrypt_configure():
 def test_dnscrypt_install(mock_write_config, mock_run, mock_installed):
     p = DNSCryptPlugin()
     
-    # 1. Если уже установлен
+    # 1. Если уже установлен (должен записать конфиг и запустить службу)
     mock_installed.return_value = True
     assert p.install() is True
-    mock_run.assert_not_called()
+    mock_write_config.assert_called_once()
+    mock_run.assert_called_once_with(["systemctl", "enable", "--now", "dnscrypt-proxy"], capture_output=True)
+
+    # Сбрасываем моки
+    mock_write_config.reset_mock()
+    mock_run.reset_mock()
 
     # 2. Если не установлен, пробуем установить успешно
     mock_installed.return_value = False
     mock_run.return_value = MagicMock(returncode=0)
     assert p.install() is True
     mock_write_config.assert_called_once()
-    assert mock_run.call_count >= 2  # apt-get install и systemctl enable --now
+    assert mock_run.call_count >= 2
 
 
 @patch("hydra.plugins.dnscrypt.plugin.subprocess.run")

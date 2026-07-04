@@ -32,15 +32,13 @@ class DNSCryptPlugin(BasePlugin):
     )
 
     def install(self) -> bool:
-        if self._installed():
-            return True
-
-        r = subprocess.run(
-            ["bash", "-c", "apt-get update -qq && apt-get install -y -qq dnscrypt-proxy"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if r.returncode != 0:
-            return False
+        if not self._installed():
+            r = subprocess.run(
+                ["bash", "-c", "apt-get update -qq && apt-get install -y -qq dnscrypt-proxy"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode != 0:
+                return False
 
         self._write_default_config()
         subprocess.run(["systemctl", "enable", "--now", "dnscrypt-proxy"], capture_output=True)
