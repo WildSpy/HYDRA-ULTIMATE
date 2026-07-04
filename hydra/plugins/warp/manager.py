@@ -429,20 +429,28 @@ def _menu_external_source(state: AppState, ps, plugin) -> None:
         
         status_lines = []
         for key, item in EXTERNAL_LISTS.items():
-            status = f"{GREEN}Вкл 🟢{NC}" if key in enabled_lists else f"{RED}Выкл 🔴{NC}"
-            status_lines.append(f"  • {BOLD}{item['name']}{NC} — {item['desc']}")
-            status_lines.append(f"    Статус: {status}")
+            status_ico = "🟢" if key in enabled_lists else "🔴"
+            status_txt = "Активен" if key in enabled_lists else "Отключен"
+            color = GREEN if key in enabled_lists else RED
+            
+            filename = item['url'].split('/')[-1]
+            short_desc = item['desc'].split(' (')[0]
+            
+            status_lines.append(f"  {status_ico}  {BOLD}{item['name']:<14}{NC} {DIM}({filename}){NC}")
+            status_lines.append(f"     Статус: {color}{status_txt:<8}{NC}  {DIM}│{NC}  {short_desc}")
             status_lines.append("")
             
-        status_lines.append("  " + "─" * 60)
+        status_lines.append("  " + "─" * 70)
         
         if enabled_lists:
-            status_lines.append(f"  Внешних доменов в кэше: {GREEN}{len(ext_domains)}{NC}")
-            status_lines.append(f"  Внешних IP в кэше:      {GREEN}{len(ext_ips)}{NC}")
+            status_lines.append(f"  {BOLD}Состояние кэша правил:{NC}")
+            status_lines.append(f"  • Внешних доменов в кэше:  {GREEN}{len(ext_domains)}{NC}")
+            status_lines.append(f"  • Внешних IP/CIDR в кэше:  {GREEN}{len(ext_ips)}{NC}")
             if ext_updated:
-                status_lines.append(f"  Последнее обновление:   {DIM}{ext_updated.split('.')[0].replace('T', ' ')}{NC}")
+                dt = ext_updated.split('.')[0].replace('T', ' ')
+                status_lines.append(f"  • Последнее обновление:    {CYAN}{dt}{NC}")
             else:
-                status_lines.append(f"  Последнее обновление:   {YELLOW}требуется запуск обновления{NC}")
+                status_lines.append(f"  • Последнее обновление:    {YELLOW}требуется запуск обновления{NC}")
         else:
             status_lines.append(f"  {DIM}Нет активных внешних списков. Выберите списки ниже для включения.{NC}")
             
