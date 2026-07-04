@@ -17,6 +17,7 @@ _INTERNAL_PORTS = {
     "naive": 10443,
     "anytls": 10444,
     "trusttunnel": 10445,
+    "sub_server": 9443,
 }
 
 def is_installed() -> bool:
@@ -40,6 +41,8 @@ def needs_mux(state: AppState) -> bool:
     """True, если включено 2+ TLS-443 плагина и нужен мультиплексор."""
     count = 0
     for name in _INTERNAL_PORTS:
+        if name == "sub_server":
+            continue
         proto = state.protocols.get(name)
         if proto and proto.enabled:
             # Check if domain config is present
@@ -47,6 +50,10 @@ def needs_mux(state: AppState) -> bool:
                 count += 1
             elif name == "anytls" and proto.config.get("domain"):
                 count += 1
+    # Если настроен поддомен для подписок, он всегда требует мультиплексирования
+    sub_domain = getattr(state.network, "sub_domain", "")
+    if sub_domain:
+        count += 1
     return count >= 2
 
 def is_active() -> bool:
@@ -125,6 +132,8 @@ def rebuild(state: AppState) -> bool:
     """
     backends = []
     for name, port in _INTERNAL_PORTS.items():
+        if name == "sub_server":
+            continue
         proto = state.protocols.get(name)
         if proto and proto.enabled:
             domain = ""
@@ -139,6 +148,15 @@ def rebuild(state: AppState) -> bool:
                     "port": port
                 })
                 
+    # Добавляем выделенный домен для сервера подписок
+    sub_domain = getattr(state.network, "sub_domain", "")
+    if sub_domain:
+        backends.append({
+            "name": "sub_server",
+            "domain": sub_domain,
+            "port": 9443
+        })
+
     if len(backends) < 2:
         stop()
         return True

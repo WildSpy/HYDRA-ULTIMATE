@@ -64,6 +64,7 @@ class TelegramConfig:
 class NetworkConfig:
     """Сетевые настройки."""
     domain: str = ""
+    sub_domain: str = ""
     server_ip: str = ""
     dns_servers: list[str] = field(default_factory=list)
     warp_enabled: bool = False

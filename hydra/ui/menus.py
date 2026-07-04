@@ -33,7 +33,7 @@ from hydra.plugins.registry import (
 from hydra.plugins.base import PluginCategory
 from hydra.core.systemd import install_service, install_timer, remove_unit
 from hydra.core import orchestrator
-from hydra.services.subscriptions.generator import start_sub_server
+from hydra.services.subscriptions.generator import get_subscription_url
 from hydra.services.traffic import collect_traffic
 from hydra.ui.tui import (
     clear, title, info, success, warn, error, menu, prompt, panel, kv,
@@ -42,7 +42,6 @@ from hydra.ui.tui import (
     PANEL_W,
 )
 
-_sub_server = None
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -365,13 +364,6 @@ def _user_links(state: AppState, user: User):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def main_menu(state: AppState):
-    global _sub_server
-    if _sub_server is None:
-        try:
-            _sub_server = start_sub_server(state)
-        except Exception:
-            pass
-
     while True:
         clear()
         print(BANNER)
@@ -818,6 +810,7 @@ def menu_users(state: AppState):
             ("1", "📋 Список пользователей", "Просмотр всех пользователей"),
             ("2", "👤 Добавить пользователя", "Создать нового пользователя"),
             ("3", "🔧  Управление пользователем", "Конфиги, блокировка, удаление"),
+            ("4", "🔗 Сервер подписок", "Управление фоновым сервисом подписок"),
             ("0", "↩ Назад", ""),
         ], "ПОЛЬЗОВАТЕЛИ")
         
@@ -829,6 +822,8 @@ def menu_users(state: AppState):
             user = _select_user(state)
             if user:
                 _user_detail_menu(state, user)
+        elif choice == "4":
+            menu_subscription_server(state)
         elif choice == "0":
             return
 
@@ -840,11 +835,13 @@ def _user_detail_menu(state: AppState, user: User):
         
         # Панель информации о пользователе
         status_icon = f"{GREEN}🟢{NC}" if not user.blocked else f"{RED}🔴{NC}"
+        sub_url = get_subscription_url(user, state)
         lines = [
             f"  Email:    {status_icon} {user.email}",
-            f"  UUID:     {user.uuid[:8]}...",
+            f"  UUID:     {user.uuid}",
             f"  Трафик:   {_bytes_auto(user.traffic_used_bytes)}",
             f"  Создан:   {user.created_at[:10] if user.created_at else '—'}",
+            f"  Подписка: {CYAN}{sub_url}{NC}",
         ]
         panel(f"Пользователь: {user.email}", lines)
         print()
@@ -882,10 +879,193 @@ def _user_detail_menu(state: AppState, user: User):
             return
 
 
+def install_sub_systemd_service(state: AppState) -> bool:
+    """Генерирует и записывает systemd-юнит для сервера подписок."""
+    install_dir = "/opt/hydra"
+    for candidate in ("/opt/hydra", "/opt/HYDRA-ULTIMATE", "/root/HYDRA-ULTIMATE"):
+        if Path(candidate).exists():
+            install_dir = candidate
+            break
+            
+    host = "127.0.0.1" if getattr(state.network, "sub_domain", "") else "0.0.0.0"
+    content = f"""[Unit]
+Description=HYDRA Subscription Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={install_dir}
+Environment=PYTHONPATH={install_dir}
+ExecStart=/usr/bin/python3 -m hydra.services.subscriptions.generator --host {host} --port 9443
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+"""
+    return install_service("hydra-sub", content)
+
+
+def _obtain_cert_for_sub(state: AppState) -> bool:
+    sub_domain = getattr(state.network, "sub_domain", "")
+    if not sub_domain:
+        error("Сначала настройте домен подписок.")
+        return False
+        
+    info(f"Получение SSL-сертификата для {sub_domain} через certbot...")
+    import shutil
+    if not shutil.which("certbot"):
+        info("Установка certbot...")
+        subprocess.run(["apt-get", "update"], capture_output=True)
+        subprocess.run(["apt-get", "install", "-y", "certbot"], capture_output=True)
+        
+    haproxy_running = subprocess.run(["systemctl", "is-active", "haproxy"], capture_output=True, text=True).stdout.strip() == "active"
+    if haproxy_running:
+        info("Временно останавливаем HAProxy для проверки домена...")
+        subprocess.run(["systemctl", "stop", "haproxy"])
+        
+    subprocess.run(["ufw", "allow", "80/tcp"], capture_output=True)
+    
+    r = subprocess.run([
+        "certbot", "certonly", "--standalone",
+        "-d", sub_domain,
+        "--non-interactive", "--agree-tos",
+        "--register-unsafely-without-email"
+    ], capture_output=True, text=True)
+    
+    if haproxy_running:
+        info("Запускаем HAProxy обратно...")
+        subprocess.run(["systemctl", "start", "haproxy"])
+        
+    if r.returncode == 0:
+        success("Сертификат успешно получен!")
+        return True
+    else:
+        error("Ошибка работы certbot!")
+        if r.stderr or r.stdout:
+            print(f"Вывод: {r.stderr or r.stdout}")
+        return False
+
+
+def menu_subscription_server(state: AppState):
+    """Управление сервером подписок."""
+    from hydra.core.systemd import is_active as is_svc_active, start, stop, restart
+    from hydra.services.subscriptions.generator import find_any_cert
+    
+    while True:
+        clear()
+        title("Сервер подписок")
+        
+        active = is_svc_active("hydra-sub")
+        status_str = f"{GREEN}🟢 АКТИВЕН{NC}" if active else f"{RED}🔴 НЕ АКТИВЕН{NC}"
+        
+        cert_file, key_file = find_any_cert(state)
+        cert_status = f"{GREEN}Установлен ({cert_file}){NC}" if cert_file else f"{RED}Отсутствует (Необходим для HTTPS!){NC}"
+        
+        sub_domain = getattr(state.network, "sub_domain", "")
+        domain_status = f"{CYAN}{sub_domain}{NC}" if sub_domain else f"{YELLOW}[НЕ НАСТРОЕН] (Используется IP){NC}"
+        
+        from hydra.utils.net import public_ip
+        host = sub_domain or state.network.domain or state.network.server_ip or public_ip()
+        base_url = f"https://{host}"
+        if not sub_domain:
+            base_url += ":9443"
+        base_url += "/sub/<UUID>"
+        
+        lines = [
+            kv("Статус службы:", status_str),
+            kv("Домен подписок:", domain_status),
+            kv("SSL-сертификат:", cert_status),
+            kv("Базовый URL:", f"{CYAN}{base_url}{NC}"),
+        ]
+        panel("СОСТОЯНИЕ СЕРВЕРА", lines)
+        print()
+        
+        opts = [
+            ("1", "▶️  Запустить / Включить автозапуск", "Запустить службу hydra-sub"),
+            ("2", "⏹️  Остановить / Отключить автозапуск", "Остановить службу hydra-sub"),
+            ("3", "🔄 Перезапустить", "Перезапустить службу hydra-sub"),
+            ("4", "🌐 Настроить домен подписок", "Задать выделенный домен для скрытия порта"),
+        ]
+        
+        if sub_domain and not cert_file:
+            opts.append(("5", "🔑 Получить SSL-сертификат через Certbot", "Standalone HTTP challenge"))
+            
+        opts.append(("0", "↩ Назад", ""))
+        
+        choice = menu(opts, "СЕРВЕР ПОДПИСОК")
+        
+        if choice == "0":
+            return
+        elif choice == "1":
+            if not cert_file:
+                error("Нельзя запустить сервер подписок без SSL-сертификата!")
+                prompt("Нажмите Enter")
+                continue
+                
+            install_sub_systemd_service(state)
+            if start("hydra-sub"):
+                success("Служба hydra-sub успешно запущена")
+            else:
+                error("Не удалось запустить службу. Проверьте systemctl status hydra-sub")
+            prompt("Нажмите Enter")
+            
+        elif choice == "2":
+            if stop("hydra-sub"):
+                subprocess.run(["systemctl", "disable", "hydra-sub"], capture_output=True)
+                success("Служба hydra-sub остановлена и отключена из автозапуска")
+            else:
+                error("Не удалось остановить службу")
+            prompt("Нажмите Enter")
+            
+        elif choice == "3":
+            if not cert_file:
+                error("Нельзя перезапустить сервер подписок без SSL-сертификата!")
+                prompt("Нажмите Enter")
+                continue
+            if restart("hydra-sub"):
+                success("Служба hydra-sub успешно перезапущена")
+            else:
+                error("Не удалось перезапустить службу")
+            prompt("Нажмите Enter")
+            
+        elif choice == "4":
+            new_domain = prompt("Введите выделенный домен подписок (например, sub.example.com)", default=sub_domain)
+            state.network.sub_domain = new_domain.strip()
+            save_state(state)
+            
+            from hydra.core import sni_router
+            sni_router.rebuild(state)
+            
+            success(f"Домен подписок обновлён: {new_domain}")
+            install_sub_systemd_service(state)
+            prompt("Нажмите Enter")
+            
+        elif choice == "5" and sub_domain and not cert_file:
+            if _obtain_cert_for_sub(state):
+                from hydra.core import sni_router
+                sni_router.rebuild(state)
+                restart("hydra-sub")
+            prompt("Нажмите Enter")
+
+
 def _user_configs(state: AppState, user: User):
     """Показывает конфиги и ссылки для всех протоколов."""
     clear()
     title(f"Конфигурации для пользователя: {user.email}")
+    
+    # Ссылка на подписку
+    sub_url = get_subscription_url(user, state)
+    sub_lines = [
+        f"{YELLOW}{BOLD}Base64 Subscription (v2rayNG, Shadowrocket, NekoBox, Karing):{NC}",
+        f"  {CYAN}{sub_url}{NC}"
+    ]
+    panel("🔗 ССЫЛКА НА ПОДПИСКУ", sub_lines)
+    print()
     
     from hydra.plugins import registry
     enabled_transports = registry.enabled(state, PluginCategory.TRANSPORT)
