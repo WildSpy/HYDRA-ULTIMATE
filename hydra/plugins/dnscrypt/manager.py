@@ -92,7 +92,7 @@ def _find_cache_dir() -> str:
     return "/etc/dnscrypt-proxy"
 
 
-def _fetch_resolver_list() -> tuple[list[str], bool]:
+def _fetch_resolver_list() -> tuple[list[str], bool, str]:
     def _parse_names(stdout: str) -> list[str]:
         names = []
         seen = set()
@@ -110,6 +110,7 @@ def _fetch_resolver_list() -> tuple[list[str], bool]:
                 names.append(name)
         return names
 
+    debug_info = []
     tmp_conf = None
     try:
         content = DNSCRYPT_CONF.read_text(encoding="utf-8")
@@ -132,32 +133,55 @@ def _fetch_resolver_list() -> tuple[list[str], bool]:
         fd, tmp_conf = tempfile.mkstemp(suffix=".toml")
         with os.fdopen(fd, "w") as f:
             f.write(tmp_content)
-    except Exception:
+        debug_info.append(f"Created tmp config: {tmp_conf}")
+    except Exception as e:
         tmp_conf = None
+        debug_info.append(f"Failed to create tmp config: {e}")
 
     conf = tmp_conf if tmp_conf else str(DNSCRYPT_CONF)
     dnscrypt_bin = get_dnscrypt_bin()
     cwd_dir = _find_cache_dir()
+    debug_info.append(f"dnscrypt_bin: {dnscrypt_bin} (exists: {dnscrypt_bin.exists()})")
+    debug_info.append(f"conf: {conf} (exists: {Path(conf).exists()})")
+    debug_info.append(f"cwd_dir: {cwd_dir} (exists: {Path(cwd_dir).exists()})")
+
+    # Check CACHE_PATHS presence
+    for cp in [
+        "/etc/dnscrypt-proxy/public-resolvers.md",
+        "/var/cache/dnscrypt-proxy/public-resolvers.md",
+        "/var/lib/dnscrypt-proxy/public-resolvers.md",
+        "/usr/local/etc/dnscrypt-proxy/public-resolvers.md"
+    ]:
+        debug_info.append(f"Cache file {cp}: exists={Path(cp).exists()}")
 
     try:
+        debug_info.append(f"Running sort command: {str(dnscrypt_bin)} -config {conf} -list -sort rtt")
         r = subprocess.run(
             [str(dnscrypt_bin), "-config", conf, "-list", "-sort", "rtt"],
             capture_output=True, text=True, timeout=60,
             cwd=cwd_dir
         )
+        debug_info.append(f"Sort command returncode: {r.returncode}")
+        debug_info.append(f"Sort command stdout (first 200 chars): {r.stdout[:200]}")
+        debug_info.append(f"Sort command stderr (first 200 chars): {r.stderr[:200]}")
         names = _parse_names(r.stdout)
         if names:
-            return names, True
+            return names, True, "\n".join(debug_info)
 
+        debug_info.append(f"Running plain list command: {str(dnscrypt_bin)} -config {conf} -list")
         r = subprocess.run(
             [str(dnscrypt_bin), "-config", conf, "-list"],
             capture_output=True, text=True, timeout=30,
             cwd=cwd_dir
         )
+        debug_info.append(f"Plain command returncode: {r.returncode}")
+        debug_info.append(f"Plain command stdout (first 200 chars): {r.stdout[:200]}")
+        debug_info.append(f"Plain command stderr (first 200 chars): {r.stderr[:200]}")
         names = _parse_names(r.stdout)
-        return names, False
-    except Exception:
-        return [], False
+        return names, False, "\n".join(debug_info)
+    except Exception as e:
+        debug_info.append(f"Subprocess run exception: {e}")
+        return [], False, "\n".join(debug_info)
     finally:
         if tmp_conf:
             try:
@@ -331,12 +355,16 @@ def do_dnscrypt_selector(state: AppState, plugin) -> None:
         info("server_names не установлен (используется весь пул)")
 
     info("Получаю список резолверов...")
-    resolvers, sorted_by_rtt = _fetch_resolver_list()
+    resolvers, sorted_by_rtt, debug_info = _fetch_resolver_list()
 
     if not resolvers:
         warn("Список резолверов пуст. Возможно:")
         warn("  • DNSCrypt ещё не скачал public-resolvers.md (подождите минуту)")
         warn("  • Нет доступа к интернету с сервера")
+        print(f"\n  {YELLOW}═══════════════ ОТЛАДОЧНЫЕ ДАННЫЕ ═══════════════{NC}")
+        for line in debug_info.splitlines():
+            print(f"  {DIM}{line}{NC}")
+        print(f"  {YELLOW}═════════════════════════════════════════════════{NC}\n")
         prompt("Нажмите Enter для выхода")
         return
 
