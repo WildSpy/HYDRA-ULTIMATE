@@ -250,10 +250,11 @@ def _run_install(state: AppState, plugin):
             f"&workers=16&port={LOCAL_TUN_PORT}"
             f"&pass={main_pass}"
         )
-        print()
-        box(f" Ссылка qwdtt:// для импорта в Android-клиент:\n\n{YELLOW}{qwdtt_link}{NC}\n\n"
-            f" Замените ВК_ХЕШ_ЗВОНКА на хеш из ссылки vk.com/call/join/ХЕШ", 
-            "БЫСТРАЯ ССЫЛКА")
+        panel("БЫСТРАЯ ССЫЛКА", [
+            "Ссылка qwdtt:// для импорта в Android-клиент:",
+            "Замените ВК_ХЕШ_ЗВОНКА на хеш из ссылки vk.com/call/join/ХЕШ"
+        ])
+        print(f"\n  {YELLOW}{qwdtt_link}{NC}\n")
         
         _save_link_to_file(qwdtt_link, "qwdtt_link.txt")
     else:
@@ -387,12 +388,14 @@ def _create_password_wizard(state: AppState):
         f"&pass={new_pass}"
     )
     
-    print()
-    box(f" Временный пароль: {YELLOW}{new_pass}{NC}\n"
-        f" Действует до:     {datetime.fromtimestamp(expires_at).strftime('%d.%m.%Y')}\n"
-        f" Устройств:        {max_devs}\n\n"
-        f" Ссылка qwdtt:// для клиента:\n\n{YELLOW}{link}{NC}",
-        "ПАРАМЕТРЫ ПОДКЛЮЧЕНИЯ")
+    panel("ПАРАМЕТРЫ ПОДКЛЮЧЕНИЯ", [
+        f"Временный пароль: {YELLOW}{new_pass}{NC}",
+        f"Действует до:     {datetime.fromtimestamp(expires_at).strftime('%d.%m.%Y')}",
+        f"Устройств:        {max_devs}",
+        "",
+        "Ссылка qwdtt:// для клиента:"
+    ])
+    print(f"\n  {YELLOW}{link}{NC}\n")
         
     _save_link_to_file(link, f"link_{new_pass[:8]}.txt")
     prompt("Нажмите Enter...")
@@ -435,10 +438,12 @@ def _show_password_link_wizard(state: AppState, passwords: dict):
                 f"&pass={pw}"
             )
             
-            print()
-            box(f" Пароль: {YELLOW}{pw}{NC}\n\n"
-                f" Ссылка для клиента:\n\n{YELLOW}{link}{NC}",
-                "ССЫЛКА ПОДКЛЮЧЕНИЯ")
+            panel("ССЫЛКА ПОДКЛЮЧЕНИЯ", [
+                f"Пароль: {YELLOW}{pw}{NC}",
+                "",
+                "Ссылка для клиента:"
+            ])
+            print(f"\n  {YELLOW}{link}{NC}\n")
             
             _save_link_to_file(link, f"link_{pw[:8]}.txt")
     except ValueError:
@@ -500,10 +505,11 @@ def _show_main_link(state: AppState):
         f"&pass={main_pass}"
     )
     
-    print()
-    box(f" Ссылка qwdtt:// (Главный пароль):\n\n{YELLOW}{qwdtt_link}{NC}\n\n"
-        f" Замените ВК_ХЕШ на хеш из ссылки vk.com/call/join/ХЕШ",
-        "ГЛАВНАЯ ССЫЛКА")
+    panel("ГЛАВНАЯ ССЫЛКА", [
+        "Ссылка qwdtt:// (Главный пароль):",
+        "Замените ВК_ХЕШ на хеш из ссылки vk.com/call/join/ХЕШ"
+    ])
+    print(f"\n  {YELLOW}{qwdtt_link}{NC}\n")
         
     _save_link_to_file(qwdtt_link, "qwdtt_link.txt")
     prompt("Нажмите Enter...")
