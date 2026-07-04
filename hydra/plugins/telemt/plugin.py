@@ -30,6 +30,7 @@ CONFIG_FILE = CONFIG_DIR / "telemt.toml"
 WORK_DIR = Path("/var/lib/telemt")
 SERVICE_FILE = Path("/etc/systemd/system/telemt.service")
 SERVICE_NAME = "telemt"
+LOG_FILE = Path("/var/log/telemt_install.log")
 
 DEFAULT_PORT = 8443
 GITHUB_REPO = "telemt/telemt"
