@@ -11,6 +11,11 @@ import sys
 import shutil
 from typing import Optional
 
+try:
+    import readline
+except ImportError:
+    pass
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  Цвета
 # ═════════════════════════════════════════════════════════════════════════════

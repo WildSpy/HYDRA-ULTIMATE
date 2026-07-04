@@ -602,7 +602,7 @@ def menu_plugin(state: AppState, p):
             if st.info:
                 for k, v in st.info.items():
                     lines.append(f"  {k}: {v}")
-            panel(f"{p.meta.name.upper()} v{p.meta.version}", lines)
+            panel(f"🛡️ {p.meta.name.upper()} CONTROL", lines)
         except Exception:
             panel(p.meta.name.upper(), ["  Статус недоступен"])
         print()
