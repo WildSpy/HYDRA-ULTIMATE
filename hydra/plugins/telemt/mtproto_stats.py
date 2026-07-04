@@ -250,6 +250,19 @@ def _parse_journal(since: Optional[str] = None) -> dict:
 
     return result
 
+def _get_username_to_email_map() -> dict:
+    mapping = {}
+    try:
+        from hydra.core.state import load_state
+        state = load_state()
+        for u in state.users:
+            username = u.credentials.get("telemt", {}).get("username")
+            if username:
+                mapping[username] = u.email
+    except Exception:
+        pass
+    return mapping
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  ХРАНИЛИЩЕ СТАТИСТИКИ
 # ══════════════════════════════════════════════════════════════════════════════
@@ -411,16 +424,19 @@ def _render_stats(d: dict, realtime: bool = False) -> None:
         _box_row(f"  {YELLOW}⚠  RX/TX — оценочно, пропорционально сессиям{NC}")
         _box_row()
     if users:
+        email_map = _get_username_to_email_map()
         hdr = f"  {'Имя':<16}  {'Сесс':>5}  {'↓ RX ≈':>10}  {'↑ TX ≈':>10}  Последний вход"
         _box_row(f"{DIM}{hdr}{NC}")
         _box_row(f"  {DIM}{'─'*16}  {'─'*5}  {'─'*10}  {'─'*10}  {'─'*14}{NC}")
         for uname, udata in sorted(users.items()):
+            display_name = email_map.get(uname, uname)
+            display_fit = display_name[:16]
             u_rx   = udata.get("rx",       0)
             u_tx   = udata.get("tx",       0)
             u_ses  = udata.get("sessions", 0)
             u_seen = (udata.get("last_seen") or "—")[:14]
             active = u_rx > 0 or u_tx > 0 or u_ses > 0
-            nc     = f"{GREEN}{uname:<16}{NC}" if active else f"{DIM}{uname:<16}{NC}"
+            nc     = f"{GREEN}{display_fit:<16}{NC}" if active else f"{DIM}{display_fit:<16}{NC}"
             _box_row(
                 f"  {nc}  "
                 f"{u_ses:>5}  "
