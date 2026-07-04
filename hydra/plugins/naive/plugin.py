@@ -213,9 +213,10 @@ class NaivePlugin(BasePlugin):
 
         user_q = urllib.parse.quote(username, safe="")
         pass_q = urllib.parse.quote(password, safe="")
-        tag = urllib.parse.quote(username, safe="")
+        tag_raw = f"{username} NaiveProxy"
+        tag_q = urllib.parse.quote(tag_raw, safe="")
         sni_q = urllib.parse.quote(domain, safe="")
-        return f"naive://{user_q}:{pass_q}@{domain}:{port}?sni={sni_q}#{tag}"
+        return f"naive+https://{user_q}:{pass_q}@{domain}:{port}?security=tls&sni={sni_q}#{tag_q}"
 
     # ═════════════════════════════════════════════════════════════════════
     #  Статус / трафик

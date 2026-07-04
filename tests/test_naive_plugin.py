@@ -75,15 +75,17 @@ def test_configure_empty_when_no_domain():
 
 
 def test_client_link_valid_uri():
-    """client_link() начинается с naive://."""
+    """client_link() начинается с naive+https://."""
     p = NaivePlugin()
     state = _make_state([_make_user("a@x.com", uuid="uuid-a")])
     link = p.client_link(_make_user("a@x.com", uuid="uuid-a"), state)
 
-    assert link.startswith("naive://")
+    assert link.startswith("naive+https://")
     assert "example.com:443" in link
+    assert "security=tls" in link
     assert "sni=example.com" in link
     assert "uuid-a" not in link
+    assert "%20NaiveProxy" in link
 
 
 def test_on_user_add_sets_credentials():
