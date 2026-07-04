@@ -256,13 +256,35 @@ def clean_link_to_sn(link: str, user: User) -> Optional[str]:
         if scheme in ("naive", "naive+quic", "naive+https"):
             return None
             
-        # 2. AnyTLS (NekoBox supports anytls:// natively)
+        # 2. AnyTLS (NekoBox does NOT support anytls:// natively, needs sn://anytls)
         elif scheme == "anytls":
-            return None
+            netloc = parsed.netloc
+            if "@" not in netloc:
+                return None
+            password, host_port = netloc.split("@", 1)
+            password = urllib.parse.unquote(password)
+            host, port_s = host_port.split(":", 1) if ":" in host_port else (host_port, "443")
+            port = int(port_s)
             
-        # 3. TrustTunnel (NekoBox supports tt:// natively)
+            query = urllib.parse.parse_qs(parsed.query)
+            sni = query.get("sni", [host])[0]
+            
+            return serialize_anytls(host, port, password, sni, "chrome", fragment)
+            
+        # 3. TrustTunnel (NekoBox does NOT support tt:// natively, needs sn://trusttunnel)
         elif scheme in ("tt", "trusttunnel"):
-            return None
+            netloc = parsed.netloc
+            if "@" not in netloc:
+                return None
+            creds, host_port = netloc.split("@", 1)
+            username, password = urllib.parse.unquote(creds).split(":", 1) if ":" in creds else (urllib.parse.unquote(creds), "")
+            host, port_s = host_port.split(":", 1) if ":" in host_port else (host_port, "443")
+            port = int(port_s)
+            
+            query = urllib.parse.parse_qs(parsed.query)
+            sni = query.get("sni", [host])[0]
+            
+            return serialize_trusttunnel(host, port, username, password, sni, fragment)
             
         # 4. Mieru (NekoBox requires sn://mieru via its plugin)
         elif scheme == "mierus":
