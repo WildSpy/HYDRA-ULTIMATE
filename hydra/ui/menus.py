@@ -610,6 +610,10 @@ def menu_plugin(state: AppState, p):
         from hydra.plugins.warp.manager import menu_warp
         menu_warp(state, p)
         return
+    if p.meta.name == "telemt":
+        from hydra.plugins.telemt.manager import menu_telemt
+        menu_telemt(state, p)
+        return
 
     from hydra.core.state import get_protocol
     

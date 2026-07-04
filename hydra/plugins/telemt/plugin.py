@@ -4,7 +4,7 @@
   • configure() — генерит telemt.toml в памяти.
   • apply() — пишет конфиг, systemctl reload-or-restart.
   • per-user: детерминированный secret (32 hex) из uuid.
-  • traffic — iptables accounting (как mieru).
+  • traffic — чтение из stats.json.
   • nft_tproxy_ports=[8443].
 """
 from __future__ import annotations
@@ -15,9 +15,7 @@ import platform
 import shutil
 import subprocess
 import tarfile
-import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 from hydra.plugins.base import BasePlugin, PluginMeta, PluginStatus, PluginCategory, ConfigFragment
@@ -34,7 +32,6 @@ SERVICE_FILE = Path("/etc/systemd/system/telemt.service")
 SERVICE_NAME = "telemt"
 
 DEFAULT_PORT = 8443
-
 GITHUB_REPO = "telemt/telemt"
 
 
@@ -86,9 +83,15 @@ class TelemtPlugin(BasePlugin):
     # ═════════════════════════════════════════════════════════════════════
 
     def configure(self, state: AppState) -> ConfigFragment:
-        port = DEFAULT_PORT
-        domain = state.network.domain
-        server_ip = state.network.server_ip or public_ip()
+        ps = state.protocols.setdefault("telemt", state.protocols.get("telemt") or __import__("hydra.core.state").core.state.PluginState())
+        cfg = ps.config or {}
+
+        port = cfg.get("port", DEFAULT_PORT)
+        domain = cfg.get("tls_domain", state.network.domain or "google.com")
+        use_mp = cfg.get("use_middle_proxy", False)
+        client_mss = cfg.get("client_mss", "")
+        sb_int = cfg.get("singbox_integration_enabled", False)
+        sb_port = cfg.get("singbox_integration_port", 10811)
 
         has_ipv4 = True
         has_ipv6 = False
@@ -111,11 +114,33 @@ class TelemtPlugin(BasePlugin):
             ipv6=has_ipv6,
             tls_domain=domain,
             users=users,
+            use_middle_proxy=use_mp,
+            client_mss=client_mss
         )
 
         self._pending_cfg = toml
+
+        inbounds = []
+        route_rules = []
+        if sb_int:
+            inbounds.append({
+                "type": "redirect",
+                "tag": "redirect-telemt",
+                "listen": "127.0.0.1",
+                "listen_port": sb_port,
+            })
+            # Заворачиваем в WARP если варп активен
+            warp_enabled = state.protocols.get("warp") and state.protocols["warp"].enabled
+            if warp_enabled:
+                route_rules.append({
+                    "inbound": ["redirect-telemt"],
+                    "outbound": "warp"
+                })
+
         return ConfigFragment(
-            nft_tproxy_ports=[port],
+            inbounds=inbounds,
+            route_rules=route_rules,
+            nft_tproxy_ports=[port]
         )
 
     def apply(self, state: AppState) -> bool:
@@ -124,10 +149,51 @@ class TelemtPlugin(BasePlugin):
 
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         WORK_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(self._pending_cfg)
+        CONFIG_FILE.write_text(self._pending_cfg, encoding="utf-8")
         CONFIG_FILE.chmod(0o640)
 
+        # 1. Fallback конфигурация
+        ps = state.protocols.setdefault("telemt", state.protocols.get("telemt") or __import__("hydra.core.state").core.state.PluginState())
+        cfg = ps.config or {}
+        fallback_cfg_dict = cfg.get("fallback_cfg")
+        if fallback_cfg_dict:
+            try:
+                from hydra.plugins.telemt.telemt_fallback import FallbackConfig, append_fallback_section
+                fb_cfg = FallbackConfig(**fallback_cfg_dict)
+                append_fallback_section(CONFIG_FILE, fb_cfg)
+            except Exception as e:
+                print(f"  [telemt] Ошибка записи fallback настроек: {e}")
+
+        # 2. Перезапуск службы
+        subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
         subprocess.run(["systemctl", "reload-or-restart", SERVICE_NAME], capture_output=True)
+
+        # 3. Интеграция с Sing-Box (Self-Route)
+        sb_int = cfg.get("singbox_integration_enabled", False)
+        sb_port = cfg.get("singbox_integration_port", 10811)
+        try:
+            from hydra.plugins.telemt import telemt_self_route as sr
+            if sb_int:
+                sr.enable(sb_port)
+            else:
+                sr.disable(sb_port)
+        except Exception as e:
+            print(f"  [telemt] Ошибка применения правил маршрутизации: {e}")
+
+        # 4. Установка фонового планировщика для сбора статистики (Cron)
+        cron_file = Path("/etc/cron.d/telemt-stats")
+        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        try:
+            cron_file.write_text(
+                f"*/5 * * * * root PYTHONPATH={project_root} python3 -c "
+                "\"from hydra.plugins.telemt.mtproto_stats import _load_stats, _collect, _save_stats; "
+                "d = _load_stats(); d = _collect(d); _save_stats(d)\" >/dev/null 2>&1\n"
+            )
+            cron_file.chmod(0o644)
+            subprocess.run(["systemctl", "restart", "cron"], capture_output=True)
+        except Exception as e:
+            print(f"  [telemt] Ошибка создания задания cron: {e}")
+
         time.sleep(2)
         return True
 
@@ -161,11 +227,28 @@ class TelemtPlugin(BasePlugin):
         return json.dumps({"link": link, "protocol": "telemt"})
 
     def client_link(self, user: User, state: AppState) -> str:
+        ps = state.protocols.setdefault("telemt", state.protocols.get("telemt") or __import__("hydra.core.state").core.state.PluginState())
+        cfg = ps.config or {}
+        port = cfg.get("port", DEFAULT_PORT)
+        
+        domain = cfg.get("tls_domain")
+        if domain is None:
+            domain = state.network.domain
+        
         secret = self._derive_secret(user.uuid)
         server_ip = state.network.server_ip or public_ip()
-        port = DEFAULT_PORT
-        domain = state.network.domain
         tls_secret = self._make_tls_secret(secret, domain) if domain else secret
+        
+        # Проверяем, активен ли iOS-фикс для ссылки
+        try:
+            from hydra.plugins.telemt.telemt_ios_fix import status as ios_status
+            ios_st = ios_status()
+            if ios_st.get("enabled"):
+                # Возвращаем ссылку с портом iOS-фикса
+                return f"tg://proxy?server={server_ip}&port={ios_st['ext_port']}&secret={tls_secret}"
+        except Exception:
+            pass
+
         return f"tg://proxy?server={server_ip}&port={port}&secret={tls_secret}"
 
     # ═════════════════════════════════════════════════════════════════════
@@ -175,45 +258,51 @@ class TelemtPlugin(BasePlugin):
     def status(self) -> PluginStatus:
         installed = self._installed()
         running = False
+        port = DEFAULT_PORT
+        
         if installed:
             r = subprocess.run(
                 ["systemctl", "is-active", SERVICE_NAME],
                 capture_output=True, text=True,
             )
             running = r.stdout.strip() == "active"
+            
+            # Читаем порт из конфига на диске
+            if CONFIG_FILE.exists():
+                try:
+                    for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+                        if line.strip().startswith("port ="):
+                            port = int(line.split("=")[1].strip())
+                            break
+                except Exception:
+                    pass
 
         return PluginStatus(
             installed=installed,
             enabled=CONFIG_FILE.exists(),
             running=running,
-            port=DEFAULT_PORT,
+            port=port,
         )
 
     def traffic(self, state: AppState) -> dict[str, int]:
-        if not self._installed():
+        stats_file = WORK_DIR / "stats.json"
+        if not stats_file.exists():
             return {}
 
-        username_to_email: dict[str, str] = {}
-        for u in state.users:
-            if u.blocked:
-                continue
-            uname = self._derive_username(u.uuid)
-            username_to_email[uname] = u.email
+        try:
+            d = json.loads(stats_file.read_text(encoding="utf-8"))
+            users_data = d.get("users", {})
+        except Exception:
+            return {}
 
         result: dict[str, int] = {}
-        for username, email in username_to_email.items():
-            for chain in ("INPUT", "OUTPUT"):
-                r = subprocess.run(
-                    ["iptables", "-t", "filter", "-L", chain, "-n", "-v", "-x"],
-                    capture_output=True, text=True,
-                )
-                if r.returncode != 0:
-                    continue
-                for line in r.stdout.splitlines():
-                    if username in line:
-                        parts = line.split()
-                        if len(parts) >= 2 and parts[0].isdigit():
-                            result[email] = result.get(email, 0) + int(parts[0])
+        for u in state.users:
+            uname = self._derive_username(u.uuid)
+            if uname in users_data:
+                ud = users_data[uname]
+                rx = ud.get("rx", 0)
+                tx = ud.get("tx", 0)
+                result[u.email] = rx + tx
         return result
 
     def connected_clients(self) -> list[dict]:
@@ -246,12 +335,10 @@ class TelemtPlugin(BasePlugin):
 
     @staticmethod
     def _derive_secret(uuid: str) -> str:
-        """32 hex-символа (MTProto secret, 16 байт), детерминирован от uuid."""
         return hashlib.sha256(f"telemt-secret|{uuid}".encode()).hexdigest()[:32]
 
     @staticmethod
     def _make_tls_secret(base_secret: str, domain: str) -> str:
-        """Секрет с TLS: ee{hex_secret}{domain_hex}."""
         return f"ee{base_secret}{domain.encode().hex()}"
 
     @staticmethod
@@ -263,7 +350,8 @@ class TelemtPlugin(BasePlugin):
         libc = "gnu"
         asset_pattern = f"telemt-{arch}-linux-{libc}.tar.gz"
 
-        dest = Path("/tmp/telemt-install")
+        import tempfile
+        dest = Path(tempfile.gettempdir()) / "telemt-install"
         dest.mkdir(parents=True, exist_ok=True)
         archive = dest / asset_pattern
 
@@ -327,6 +415,7 @@ class TelemtPlugin(BasePlugin):
             "\n"
             "[Install]\n"
             "WantedBy=multi-user.target\n"
+            "\n"
         )
         subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
         subprocess.run(["systemctl", "enable", SERVICE_NAME], capture_output=True)
@@ -338,6 +427,8 @@ class TelemtPlugin(BasePlugin):
         ipv6: bool,
         tls_domain: str,
         users: dict[str, str],
+        use_middle_proxy: bool = False,
+        client_mss: str = ""
     ) -> str:
         net_prefer = 6 if (ipv6 and not ipv4) else 4
         arr = ", ".join(f'"{u}"' for u in users)
@@ -346,7 +437,13 @@ class TelemtPlugin(BasePlugin):
             "[general]",
             "prefer_ipv6 = false",
             "fast_mode = true",
-            "use_middle_proxy = false",
+            f"use_middle_proxy = {str(use_middle_proxy).lower()}",
+        ]
+
+        if client_mss:
+            lines.append(f'client_mss = "{client_mss}"')
+
+        lines += [
             "",
             "[network]",
             f"ipv4 = {str(ipv4).lower()}",
