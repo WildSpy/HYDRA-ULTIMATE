@@ -196,26 +196,40 @@ def test_censorcheck(mode: str):
         
         lines = []
         for item in results:
-            domain = item.get("domain", "")
+            domain = item.get("service", "")
             http = item.get("http", {})
             https = item.get("https", {})
             
-            h_status = http.get("status", "N/A")
-            h_code = http.get("code")
-            s_status = https.get("status", "N/A")
-            s_code = https.get("code")
+            http_v4 = http.get("ipv4") or {}
+            https_v4 = https.get("ipv4") or {}
             
-            def get_status_str(status, code):
-                if "Available" in status:
-                    c = f" (code {code})" if code else ""
-                    return f"{GREEN}Доступен{c}{NC}"
-                elif "Blocked" in status:
-                    return f"{RED}Заблокирован{NC}"
-                else:
+            def get_status_str(res_obj):
+                if not res_obj or res_obj == "null":
+                    return f"{DIM}N/A{NC}"
+                status = res_obj.get("status")
+                if status is None or str(status).lower() == "null":
+                    return f"{DIM}N/A{NC}"
+                
+                try:
+                    status_int = int(status)
+                except ValueError:
                     return f"{YELLOW}{status}{NC}"
                     
-            h_res = get_status_str(h_status, h_code)
-            s_res = get_status_str(s_status, s_code)
+                if status_int == 200:
+                    return f"{GREEN}Доступен (200){NC}"
+                elif status_int == -1:
+                    return f"{RED}Блок (Порт){NC}"
+                elif status_int == 0:
+                    return f"{RED}Блок (Таймаут){NC}"
+                elif 300 <= status_int < 400:
+                    return f"{GREEN}Редирект ({status_int}){NC}"
+                elif status_int == 403:
+                    return f"{RED}Отказ (403){NC}"
+                else:
+                    return f"{YELLOW}Код {status_int}{NC}"
+                    
+            h_res = get_status_str(http_v4)
+            s_res = get_status_str(https_v4)
             lines.append(kv(f"{domain}:", f"HTTP: {h_res:<25} │ HTTPS: {s_res}"))
             
         panel(f"🛡️  Результаты Censorcheck ({mode.upper()})", lines)
