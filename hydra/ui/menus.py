@@ -905,6 +905,53 @@ def _user_configs(state: AppState, user: User):
             
         # Конфиг
         try:
+            if p.meta.name == "telemt":
+                from hydra.plugins.telemt.plugin import TelemtPlugin
+                from hydra.plugins.telemt.telemt_ios_fix import status as ios_status
+                from hydra.utils.net import public_ip
+                
+                ps = state.protocols.setdefault("telemt", state.protocols.get("telemt") or PluginState())
+                cfg = ps.config or {}
+                port = cfg.get("port", 8443)
+                domain = cfg.get("tls_domain")
+                if domain is None:
+                    domain = state.network.domain
+                
+                secret = TelemtPlugin._derive_secret(user.uuid)
+                server_ip = state.network.server_ip or public_ip()
+                tls_secret = TelemtPlugin._make_tls_secret(secret, domain) if domain else secret
+                
+                box_lines = []
+                box_lines.append(f"{YELLOW}{BOLD}Основная ссылка (ПК/Android):{NC}")
+                link_main = f"tg://proxy?server={server_ip}&port={port}&secret={tls_secret}"
+                link_width = PANEL_W - 6
+                for chunk in [link_main[i:i+link_width] for i in range(0, len(link_main), link_width)]:
+                    box_lines.append(f"  {CYAN}{chunk}{NC}")
+                
+                try:
+                    ios_st = ios_status()
+                    if ios_st.get("enabled"):
+                        box_lines.append(f"{DIM}{'─' * (PANEL_W - 4)}{NC}")
+                        box_lines.append(f"{YELLOW}{BOLD}Ссылка с iOS-фиксом (порт {ios_st['ext_port']}):{NC}")
+                        link_ios = f"tg://proxy?server={server_ip}&port={ios_st['ext_port']}&secret={tls_secret}"
+                        for chunk in [link_ios[i:i+link_width] for i in range(0, len(link_ios), link_width)]:
+                            box_lines.append(f"  {CYAN}{chunk}{NC}")
+                except Exception:
+                    pass
+                
+                panel(f"🔧  {p.meta.name.upper()} CONFIG", box_lines)
+                
+                # QR-код (если qrcode установлен)
+                try:
+                    import qrcode
+                    qr = qrcode.QRCode(border=1)
+                    qr.add_data(link_main)
+                    print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для быстрого импорта (Основной):{NC}")
+                    qr.print_ascii(invert=True)
+                except ImportError:
+                    pass
+                continue
+
             conf = p.generate_client_config(user, state)
             if conf:
                 box_lines = []
