@@ -443,10 +443,10 @@ def test_ip_quality(interactive: bool = False):
     if not ensure_packages(["curl", "jq"]):
         return
         
-    cmd_args = "-j -l en -n"
+    cmd_args = "-j -l en -y"
     if interactive:
         # Для полного теста качества IP используем флаг -f
-        cmd_args = "-j -l en -n -f"
+        cmd_args = "-j -l en -y -f"
         
     try:
         stdout = run_with_spinner("Анализ репутации IP", f"bash <(curl -Ls https://IP.Check.Place) {cmd_args}")
