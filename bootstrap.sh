@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# HYDRA v1.0.0-alpha — Bootstrap Installer
+# HYDRA v2.3.1 — Bootstrap Installer
 # ═══════════════════════════════════════════════════════════════════════════════
 # Установка:
-#   curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/dev/bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/main/bootstrap.sh | sudo bash
 #
 # Что делает:
 #   1. Проверяет root, ОС (Ubuntu/Debian), Python 3.10+
@@ -138,7 +138,7 @@ fi
 echo -e "\n${BOLD}[4/5] Загрузка HYDRA${NC}"
 INSTALL_DIR="/opt/hydra"
 REPO_URL="https://github.com/gr33nimax/HYDRA-ULTIMATE"
-BRANCH="dev"
+BRANCH="main"
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
     info "Обновление репозитория..."

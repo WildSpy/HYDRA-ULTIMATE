@@ -143,7 +143,7 @@
 ### Автоматическая (рекомендуется)
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/dev/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/main/bootstrap.sh)
 ```
 
 Скрипт сам установит Python, Sing-Box, клонирует HYDRA в `/opt/hydra` и запустит TUI.
@@ -151,7 +151,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/dev
 ### Ручная
 
 ```bash
-git clone --branch dev https://github.com/gr33nimax/HYDRA-ULTIMATE /opt/hydra
+git clone https://github.com/gr33nimax/HYDRA-ULTIMATE /opt/hydra
 cd /opt/hydra
 sudo python3 main.py
 ```
