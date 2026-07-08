@@ -62,12 +62,19 @@ def _get_adapted_forward_proxy_config(naive_users: list[dict]) -> dict:
     dummy_user = "DUMMYUSER"
     dummy_pass = "DUMMYPASS"
     auth_line = f"basic_auth {dummy_user} {dummy_pass}" if naive_users else ""
-    caddyfile_content = f""":10443 {{
+    caddyfile_content = f"""{{
+    order forward_proxy before file_server
+}}
+
+:10443 {{
     forward_proxy {{
         {auth_line}
         hide_ip
         hide_via
         probe_resistance
+    }}
+    file_server {{
+        root /var/www/decoy-a
     }}
 }}"""
     
