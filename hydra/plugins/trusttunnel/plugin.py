@@ -82,6 +82,7 @@ class TrustTunnelPlugin(BasePlugin):
             "server_name": domain,
             "certificate_path": cert_file,
             "key_path": key_file,
+            "alpn": ["h2"],
         }
         return ConfigFragment(inbounds=[inbound])
 

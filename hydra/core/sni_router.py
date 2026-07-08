@@ -558,47 +558,48 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
             },
             "routes": [
                 {
+                    "match": [
+                        {
+                            "method": ["CONNECT"]
+                        }
+                    ],
                     "handle": [
                         {
-                            "handler": "subroute",
-                            "routes": [
+                            "handler": "reverse_proxy",
+                            "upstreams": [{"dial": f"127.0.0.1:{tt_port}"}],
+                            "transport": {
+                                "protocol": "http",
+                                "versions": ["2"],
+                                "tls": {
+                                    "insecure_skip_verify": True
+                                }
+                            },
+                            "headers": {
+                                "request": {
+                                    "set": {
+                                        "Proxy-Authorization": ["{http.request.header.Proxy-Authorization}"],
+                                        "Authorization": ["{http.request.header.Authorization}"]
+                                    }
+                                }
+                            },
+                            "handle_response": [
                                 {
-                                    "handle": [
+                                    "match": {"status_code": [502, 503]},
+                                    "routes": [
                                         {
-                                            "handler": "reverse_proxy",
-                                            "upstreams": [{"dial": f"127.0.0.1:{tt_port}"}],
-                                            "transport": {
-                                                "protocol": "http",
-                                                "versions": ["2"],
-                                                "tls": {
-                                                    "insecure_skip_verify": True
-                                                }
-                                            },
-                                            "headers": {
-                                                "request": {
-                                                    "set": {
-                                                        "Proxy-Authorization": ["{http.request.header.Proxy-Authorization}"],
-                                                        "Authorization": ["{http.request.header.Authorization}"]
-                                                    }
-                                                }
-                                            },
-                                            "handle_response": [
-                                                {
-                                                    "match": {"status_code": [502, 503]},
-                                                    "routes": [
-                                                        {
-                                                            "handle": [
-                                                                {"handler": "file_server", "root": "/var/www/decoy-c"}
-                                                            ]
-                                                        }
-                                                    ]
-                                                }
+                                            "handle": [
+                                                {"handler": "file_server", "root": "/var/www/decoy-c"}
                                             ]
                                         }
                                     ]
                                 }
                             ]
                         }
+                    ]
+                },
+                {
+                    "handle": [
+                        {"handler": "file_server", "root": "/var/www/decoy-c"}
                     ]
                 }
             ],
