@@ -499,6 +499,10 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
 
         http_servers["naive_server"] = {
             "listen": [f"127.0.0.1:{_INTERNAL_PORTS['naive']}"],
+            "automatic_https": {
+                "disable": True,
+                "disable_redirects": True
+            },
             "routes": [
                 {
                     "handle": [
@@ -526,6 +530,10 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
         anytls_backend = next(b for b in backends if b["name"] == "anytls")
         http_servers["anytls_decoy"] = {
             "listen": [f"127.0.0.1:{_DECOY_HTTP_PORTS['anytls']}"],
+            "automatic_https": {
+                "disable": True,
+                "disable_redirects": True
+            },
             "routes": [
                 {
                     "handle": [
@@ -544,6 +552,10 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
         tt_port = _INTERNAL_PORTS["trusttunnel"]
         http_servers["trusttunnel_decoy"] = {
             "listen": [f"127.0.0.1:{_DECOY_HTTP_PORTS['trusttunnel']}"],
+            "automatic_https": {
+                "disable": True,
+                "disable_redirects": True
+            },
             "routes": [
                 {
                     "handle": [
