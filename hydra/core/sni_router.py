@@ -77,10 +77,11 @@ def _get_adapted_forward_proxy_config(naive_users: list[dict]) -> dict:
         r = subprocess.run([
             str(CADDY_BIN), "adapt", "--config", str(tmp_cf), "--adapter", "caddyfile"
         ], capture_output=True, text=True)
-    except Exception:
+    except Exception as e:
         class MockResult:
             returncode = 1
             stdout = ""
+            stderr = f"Exception during subprocess run: {e}"
         r = MockResult()
     finally:
         try:
@@ -89,6 +90,17 @@ def _get_adapted_forward_proxy_config(naive_users: list[dict]) -> dict:
             pass
 
     if r.returncode != 0:
+        try:
+            CADDY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            debug_log = CADDY_LOG_DIR / "adapt_debug.log"
+            debug_log.write_text(
+                f"Adaptation failed! returncode={getattr(r, 'returncode', 'N/A')}\n"
+                f"Stdout: {getattr(r, 'stdout', 'N/A')}\n"
+                f"Stderr: {getattr(r, 'stderr', 'N/A')}\n",
+                encoding="utf-8"
+            )
+        except Exception:
+            pass
         return {
             "handler": "forward_proxy",
             "hide_ip": True,
@@ -101,8 +113,8 @@ def _get_adapted_forward_proxy_config(naive_users: list[dict]) -> dict:
     try:
         adapted = json.loads(r.stdout)
         servers = adapted.get("apps", {}).get("http", {}).get("servers", {})
-        server_key = list(servers.keys())[0]
-        routes = servers[server_key].get("routes", [])
+        server_key = list(servers.keys())[0] if servers else ""
+        routes = servers[server_key].get("routes", []) if server_key else []
         
         fp_handler = None
         
@@ -130,6 +142,15 @@ def _get_adapted_forward_proxy_config(naive_users: list[dict]) -> dict:
                         cred_b64 = base64.b64encode(cred.encode("utf-8")).decode("utf-8")
                         real_creds.append(cred_b64)
                 fp_handler["credentials"] = real_creds
+                return fp_handler
+            elif "auth_user_deprecated" in fp_handler:
+                if naive_users:
+                    fp_handler["auth_user_deprecated"] = naive_users[0]["username"]
+                    fp_handler["auth_pass_deprecated"] = naive_users[0]["password"]
+                else:
+                    fp_handler.pop("auth_user_deprecated", None)
+                    fp_handler.pop("auth_pass_deprecated", None)
+                return fp_handler
             elif "auth_user" in fp_handler:
                 if naive_users:
                     fp_handler["auth_user"] = naive_users[0]["username"]
@@ -137,6 +158,7 @@ def _get_adapted_forward_proxy_config(naive_users: list[dict]) -> dict:
                 else:
                     fp_handler.pop("auth_user", None)
                     fp_handler.pop("auth_pass", None)
+                return fp_handler
             elif "basic_auth" in fp_handler:
                 real_creds = []
                 for u in naive_users:
@@ -146,10 +168,29 @@ def _get_adapted_forward_proxy_config(naive_users: list[dict]) -> dict:
                         cred_b64 = base64.b64encode(cred.encode("utf-8")).decode("utf-8")
                         real_creds.append(cred_b64)
                 fp_handler["basic_auth"] = real_creds
-            return fp_handler
-    except Exception:
-        pass
+                return fp_handler
+            
+            # If no matches, log for debugging
+            try:
+                CADDY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+                debug_log = CADDY_LOG_DIR / "adapt_debug.log"
+                debug_log.write_text(
+                    f"No matching fields found in fp_handler!\n"
+                    f"fp_handler keys: {list(fp_handler.keys())}\n"
+                    f"fp_handler: {json.dumps(fp_handler)}\n",
+                    encoding="utf-8"
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            CADDY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            debug_log = CADDY_LOG_DIR / "adapt_debug.log"
+            debug_log.write_text(f"Parsing Exception: {e}\n", encoding="utf-8")
+        except Exception:
+            pass
 
+    # Default fallback if parsing did not return
     return {
         "handler": "forward_proxy",
         "hide_ip": True,
