@@ -576,18 +576,18 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
                                 }
                             ]
                         }
-                    ],
-                    "errors": {
-                        "routes": [
-                            {
-                                "handle": [
-                                    {"handler": "file_server", "root": "/var/www/decoy-c"}
-                                ]
-                            }
-                        ]
-                    }
+                    ]
                 }
             ],
+            "errors": {
+                "routes": [
+                    {
+                        "handle": [
+                            {"handler": "file_server", "root": "/var/www/decoy-c"}
+                        ]
+                    }
+                ]
+            },
             "logs": {
                 "logger_names": {tt_backend["domain"]: "decoy"}
             }
