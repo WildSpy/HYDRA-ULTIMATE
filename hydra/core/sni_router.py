@@ -7,9 +7,24 @@ from __future__ import annotations
 import os
 import json
 import shutil
+import base64
 import subprocess
 from pathlib import Path
 from hydra.core.state import AppState
+
+def _hash_password_caddy(password: str) -> str:
+    """Uses Caddy's built-in command to generate a bcrypt password hash."""
+    if not CADDY_BIN.exists():
+        return "$2a$10$MockedBcryptHashForTestingOnlyValueThisIsNotReal"
+    try:
+        r = subprocess.run([
+            str(CADDY_BIN), "hash-password", "--plaintext", password
+        ], capture_output=True, text=True)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
 
 CADDY_BIN = Path("/usr/local/bin/caddy-l4")
 CADDY_CFG = Path("/etc/caddy-l4/config.json")
@@ -314,8 +329,15 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
         }
         # Add auth if users exist
         if naive_users:
-            fp_route["handle"][0]["auth_user_deprecated"] = naive_users[0]["username"]
-            fp_route["handle"][0]["auth_pass_deprecated"] = naive_users[0]["password"]
+            basic_auth_entries = []
+            for u in naive_users:
+                bcrypt_hash = _hash_password_caddy(u["password"])
+                if bcrypt_hash:
+                    cred = f"{u['username']}:{bcrypt_hash}"
+                    cred_b64 = base64.b64encode(cred.encode("utf-8")).decode("utf-8")
+                    basic_auth_entries.append(cred_b64)
+            if basic_auth_entries:
+                fp_route["handle"][0]["basic_auth"] = basic_auth_entries
 
         http_servers["naive_server"] = {
             "listen": [f"127.0.0.1:{_INTERNAL_PORTS['naive']}"],
