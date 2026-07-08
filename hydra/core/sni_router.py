@@ -337,7 +337,7 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
                     cred_b64 = base64.b64encode(cred.encode("utf-8")).decode("utf-8")
                     basic_auth_entries.append(cred_b64)
             if basic_auth_entries:
-                fp_route["handle"][0]["basic_auth"] = basic_auth_entries
+                fp_route["handle"][0]["credentials"] = basic_auth_entries
 
         http_servers["naive_server"] = {
             "listen": [f"127.0.0.1:{_INTERNAL_PORTS['naive']}"],
