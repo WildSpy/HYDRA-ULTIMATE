@@ -182,17 +182,33 @@ def generate_awg_sn_link(conf_text: str, profile_name: str = 'AmneziaWG') -> Opt
         s3   = _parse_int(_get_awg_val(iface, 'S3',   '0'), 0)
         s4   = _parse_int(_get_awg_val(iface, 'S4',   '0'), 0)
         
-        h1   = _parse_int(_get_awg_val(iface, 'H1',   '1'), 1)
-        h2   = _parse_int(_get_awg_val(iface, 'H2',   '2'), 2)
-        h3   = _parse_int(_get_awg_val(iface, 'H3',   '3'), 3)
-        h4   = _parse_int(_get_awg_val(iface, 'H4',   '4'), 4)
+        h1   = _get_awg_val(iface, 'H1', '0')
+        h2   = _get_awg_val(iface, 'H2', '0')
+        h3   = _get_awg_val(iface, 'H3', '0')
+        h4   = _get_awg_val(iface, 'H4', '0')
         i1   = _get_awg_val(iface, 'I1', '')
+
+        # Декодируем I1 из hex в бинарные байты, если задан
+        i1_bytes = b''
+        if i1:
+            try:
+                i1_bytes = bytes.fromhex(i1)
+            except Exception:
+                try:
+                    i1_bytes = i1.encode('utf-8')
+                except Exception:
+                    pass
 
         persistent_keepalive = _parse_int(_get_awg_val(peer, 'PersistentKeepalive', '25'), 25)
         mtu = _parse_int(_get_awg_val(iface, 'MTU', '1280'), 1280)
 
         def _u32(v: int) -> bytes:
             return struct.pack('<I', v)
+
+        def _awg_serialize_bytes_len(b: bytes) -> bytes:
+            if not b:
+                return b'\x00'
+            return _awg_serialize_len(len(b)) + b
 
         data = (
             _u32(2)                                   +  # Type 2 (AWG)
@@ -210,13 +226,13 @@ def generate_awg_sn_link(conf_text: str, profile_name: str = 'AmneziaWG') -> Opt
             _u32(jmax)                                 +
             _u32(s1)                                   +
             _u32(s2)                                   +
-            _u32(h1)                                   +
-            _u32(h2)                                   +
+            _awg_serialize_string(h1)                  +
+            _awg_serialize_string(h2)                  +
             _u32(s3)                                   +
             _u32(s4)                                   +
-            _u32(h3)                                   +
-            _u32(h4)                                   +
-            _awg_serialize_string_len(i1)              +
+            _awg_serialize_string(h3)                  +
+            _awg_serialize_string(h4)                  +
+            _awg_serialize_bytes_len(i1_bytes)         +
             b'\x81\x81\x81\x81'                       +  # boolean flags
             _u32(1)                                    +  # PersistentKeepalive enabled
             _awg_serialize_string(profile_name)        +
