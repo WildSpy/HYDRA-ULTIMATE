@@ -2270,27 +2270,30 @@ def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | Non
 
     proto = get_protocol(state, name)
     enabled_val = False
+
+    # Determine target state
     if force_enable is True:
+        target_enable = True
+    elif force_enable is False:
+        target_enable = False
+    else:
+        target_enable = not (proto and proto.enabled)
+
+    if target_enable:
+        # If not installed, install first
+        if proto and not proto.installed:
+            ok = orchestrator.install_plugin(state, name)
+            if not ok:
+                raise RuntimeError(f"Не удалось установить плагин {name}")
         p.on_enable(state)
         if proto:
             proto.enabled = True
         enabled_val = True
-    elif force_enable is False:
+    else:
         p.on_disable(state)
         if proto:
             proto.enabled = False
         enabled_val = False
-    else:
-        # toggle
-        if proto and proto.enabled:
-            p.on_disable(state)
-            proto.enabled = False
-            enabled_val = False
-        else:
-            p.on_enable(state)
-            if proto:
-                proto.enabled = True
-            enabled_val = True
             
     if name == "fail2ban":
         state.security.fail2ban_enabled = enabled_val
