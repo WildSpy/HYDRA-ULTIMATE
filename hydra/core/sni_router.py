@@ -227,6 +227,9 @@ def _ensure_modern_go() -> bool:
 
     If not, downloads and installs the official Go binary.
     """
+    # Prepend /usr/local/go/bin to PATH to prioritize the official installed Go
+    os.environ["PATH"] = f"/usr/local/go/bin:{os.environ.get('PATH', '')}"
+
     go_bin = shutil.which("go")
     if go_bin:
         try:
@@ -247,14 +250,17 @@ def _ensure_modern_go() -> bool:
 
     # Download Go tarball
     go_tar = Path("/tmp/go.tar.gz")
-    go_url = "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz"
+    from hydra.utils.net import detect_arch
+    arch = detect_arch()
+    go_arch = arch if arch in ("amd64", "arm64") else "amd64"
+    go_url = f"https://go.dev/dl/go1.22.5.linux-{go_arch}.tar.gz"
 
     from hydra.utils.downloader import download
     if download(go_url, go_tar):
         print("  Extracting Go compiler to /usr/local/go...")
         try:
             subprocess.run(["tar", "-C", "/usr/local", "-xzf", str(go_tar)], capture_output=True)
-            os.environ["PATH"] = f"{os.environ.get('PATH', '')}:/usr/local/go/bin"
+            os.environ["PATH"] = f"/usr/local/go/bin:{os.environ.get('PATH', '')}"
             return True
         except Exception as e:
             print(f"  Failed to extract Go: {e}")
