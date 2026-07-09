@@ -47,6 +47,7 @@ class Fail2banPlugin(BasePlugin):
             for f in JAIL_DIR.glob("hydra-*.local"):
                 f.unlink(missing_ok=True)
         Path("/etc/fail2ban/filter.d/sing-box.conf").unlink(missing_ok=True)
+        Path("/etc/fail2ban/filter.d/awg-invalid.conf").unlink(missing_ok=True)
         return True
 
     def _write_jails(self) -> None:
@@ -68,6 +69,8 @@ class Fail2banPlugin(BasePlugin):
 failregex = (?:WARNING|ERROR).*inbound/.*(?:handshake failed|decryption failed|authentication failed|connection failed|rejected|invalid).*from \\[?(?:::ffff:)?<HOST>\\]?:\\d+
             inbound/.*(?:handshake failed|decryption failed|authentication failed|connection failed|rejected|invalid).*from \\[?(?:::ffff:)?<HOST>\\]?:\\d+
             inbound/.*from \\[?(?:::ffff:)?<HOST>\\]?:\\d+.*(?:handshake failed|decryption failed|authentication failed|connection failed|rejected|invalid)
+            inbound/tproxy.*(?:connection rejected|process connection|bad request).*from \\[?(?:::ffff:)?<HOST>\\]?
+            inbound/.*(?:TLS handshake error|unknown certificate|reality.*reject).*from \\[?(?:::ffff:)?<HOST>\\]?:\\d+
 ignoreregex =
 """
             filter_path.write_text(filter_content, encoding="utf-8")
@@ -93,12 +96,38 @@ ignoreregex =
                 "findtime": "600",
             },
         }
+
+        # Опциональный джейл для AWG kernel log
+        import shutil
+        awg_installed = Path("/usr/bin/awg").exists() or shutil.which("awg") is not None
+        if awg_installed:
+            try:
+                awg_filter_path = filter_dir / "awg-invalid.conf"
+                awg_filter_content = """[Definition]
+failregex = amneziawg.*: Invalid.*from <HOST>
+            amneziawg.*: Handshake.*failed.*<HOST>
+ignoreregex =
+"""
+                awg_filter_path.write_text(awg_filter_content, encoding="utf-8")
+                
+                jails["hydra-awg"] = {
+                    "enabled": "true",
+                    "filter": "awg-invalid",
+                    "backend": "systemd",
+                    "journalmatch": "_TRANSPORT=kernel",
+                    "maxretry": "10",
+                    "bantime": "1800",
+                    "findtime": "300",
+                }
+            except Exception:
+                pass
+
         for name, opts in jails.items():
             path = JAIL_DIR / f"{name}.local"
             parts = []
             for k, v in opts.items():
                 parts.append(f"{k} = {v}")
-            path.write_text(f"[{name}]\n" + "\n".join(parts) + "\n")
+            path.write_text(f"[{name}]\n" + "\n".join(parts) + "\n", encoding="utf-8")
 
     def _installed(self) -> bool:
         return F2B_BIN.exists()

@@ -3,7 +3,7 @@ hydra/plugins/amneziawg/plugin.py — AmneziaWG 2.0 (wiresock kernel-модул�
 
 Контракт v2:
   • configure() — ЧИСТАЯ: генерит секции [Peer] в памяти, не трогает систему.
-  • apply() — пишет awg0.conf, применяет syncconf / поднимает интерфейс.
+  • apply() — пишет awg0.conf / awg1.conf, применяет syncconf / поднимает интерфейс.
   • per-user: on_user_add/remove/block → пересборка + apply.
   • traffic(state) — строит pub→email из state.users.
   • connected_clients() — без PEER_MAP, использует self._peer_map.
@@ -40,19 +40,28 @@ DEFAULT_OBFUSCATION = {
 OBFUSCATION_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
                     "H1", "H2", "H3", "H4"]
 
+# Мульти-профильный режим
+AWG_CONF_1 = AWG_CONF_DIR / "awg1.conf"
+AWG_INTERFACE_1 = "awg1"
+AWG_UNIT_1 = "awg-quick@awg1"
+DEFAULT_PORT_1 = 51821
+OBFUSCATION_KEYS_EXTENDED = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
+                             "H1", "H2", "H3", "H4", "I1"]
+
 
 class AmneziaWGPlugin(BasePlugin):
     meta = PluginMeta(
         name="amneziawg",
         description="AmneziaWG 2.0: WireGuard с обфускацией (kernel-модуль)",
         category=PluginCategory.TRANSPORT,
-        version="2.0.0",
+        version="2.1.0",
         needs_domain=False,
     )
 
     def __init__(self):
         self._pending_conf: str | None = None
-        self._peer_map: dict[str, str] = {}
+        self._pending_conf_1: str | None = None
+        self._peer_map: dict[str, tuple[str, str]] = {}
 
     # ═════════════════════════════════════════════════════════════════════
     #  Установка / удаление
@@ -99,6 +108,8 @@ class AmneziaWGPlugin(BasePlugin):
         """Полностью удаляет AmneziaWG: служба, пакеты, модуль, файлы."""
         subprocess.run(["systemctl", "stop", AWG_UNIT], capture_output=True)
         subprocess.run(["systemctl", "disable", AWG_UNIT], capture_output=True)
+        subprocess.run(["systemctl", "stop", AWG_UNIT_1], capture_output=True)
+        subprocess.run(["systemctl", "disable", AWG_UNIT_1], capture_output=True)
         subprocess.run(["apt-get", "purge", "-y", "-qq",
             "amneziawg", "amneziawg-tools", "amneziawg-dkms"], capture_output=True)
         subprocess.run(["modprobe", "-r", "amneziawg"], capture_output=True)
@@ -119,28 +130,60 @@ class AmneziaWGPlugin(BasePlugin):
         if not AWG_CONF.exists():
             return ConfigFragment()
 
-        existing_ips = self._existing_peer_ips()
-        base, server_octet, network = self._network(state)
-        iface_block = self._interface_block_for_network(base, server_octet)
+        # Настраиваем awg0
+        self._pending_conf = self._generate_config_for_iface(
+            state,
+            conf_path=AWG_CONF,
+            profile_name="desktop",
+            default_network="10.67.67.0/24"
+        )
+        
+        # Настраиваем awg1 (если mobile активен)
+        self._pending_conf_1 = None
+        ps = state.protocols.get("amneziawg")
+        if ps and "profiles" in ps.config and "mobile" in ps.config["profiles"]:
+            self._pending_conf_1 = self._generate_config_for_iface(
+                state,
+                conf_path=AWG_CONF_1,
+                profile_name="mobile",
+                default_network="10.68.68.0/24"
+            )
 
+        ifaces = [AWG_INTERFACE]
+        if self._pending_conf_1:
+            ifaces.append(AWG_INTERFACE_1)
+
+        return ConfigFragment(
+            nft_tproxy_ifaces=ifaces,
+        )
+
+    def _generate_config_for_iface(self, state: AppState, conf_path: Path, profile_name: str, default_network: str) -> str | None:
+        if not conf_path.exists():
+            return None
+        
+        existing_ips = self._existing_peer_ips_for_conf(conf_path)
+        base, server_octet, network = self._network_for_profile(state, conf_path, profile_name, default_network)
+        iface_block = self._interface_block_for_conf(conf_path, base, server_octet)
+        
         used = set(existing_ips.values()) | {server_octet}
-        peer_map: dict[str, str] = {}
         blocks = [iface_block.rstrip(), ""]
-
+        
         for user in state.users:
             if user.blocked:
                 continue
-            keys = self._get_or_create_keys(user, state)
+            
+            keys = self._get_or_create_keys(user, state, profile=profile_name)
             pub = keys["public_key"]
             psk = keys["preshared_key"]
-
+            
             if pub in existing_ips:
                 octet = existing_ips[pub]
             else:
                 octet = self._first_free(used)
                 used.add(octet)
-
-            peer_map[pub] = user.email
+                
+            self._peer_map[pub] = (user.email, "Mobile" if profile_name == "mobile" else "Desktop")
+            
             blocks += [
                 f"### {user.email}",
                 "[Peer]",
@@ -149,55 +192,58 @@ class AmneziaWGPlugin(BasePlugin):
                 f"AllowedIPs = {base}.{octet}/32",
                 "",
             ]
-
-        self._pending_conf = "\n".join(blocks) + "\n"
-        self._peer_map = peer_map
-
-        return ConfigFragment(
-            nft_tproxy_ifaces=[AWG_INTERFACE],
-        )
+            
+        return "\n".join(blocks) + "\n"
 
     def apply(self, state: AppState) -> bool:
-        """Пишет awg0.conf и применяет syncconf / поднимает интерфейс."""
-        if not self._pending_conf:
-            return False
-        AWG_CONF.write_text(self._pending_conf)
-        AWG_CONF.chmod(0o600)
-        return self._apply()
+        """Пишет awg0.conf / awg1.conf и применяет syncconf / поднимает интерфейс."""
+        ok = True
+        if self._pending_conf:
+            AWG_CONF.write_text(self._pending_conf, encoding="utf-8")
+            AWG_CONF.chmod(0o600)
+            ok = ok and self._apply_iface(AWG_INTERFACE, AWG_CONF, AWG_UNIT)
+            
+        if self._pending_conf_1:
+            AWG_CONF_1.write_text(self._pending_conf_1, encoding="utf-8")
+            AWG_CONF_1.chmod(0o600)
+            ok = ok and self._apply_iface(AWG_INTERFACE_1, AWG_CONF_1, AWG_UNIT_1)
+            
+        return ok
 
-    def _apply(self) -> bool:
-        """Применяет awg0.conf без разрыва туннеля (или поднимает/перезапускает интерфейс)."""
-        active_ip = self._active_ip()
+    def _apply_iface(self, interface: str, conf_path: Path, unit: str) -> bool:
+        """Применяет conf без разрыва туннеля (или перезапускает)."""
+        active_ip = self._active_ip_iface(interface)
         config_ip = None
-        if AWG_CONF.exists():
-            m = re.search(r"Address\s*=\s*(\d+\.\d+\.\d+\.\d+)", AWG_CONF.read_text())
+        if conf_path.exists():
+            m = re.search(r"Address\s*=\s*(\d+\.\d+\.\d+\.\d+)", conf_path.read_text(encoding="utf-8"))
             if m:
                 config_ip = m.group(1)
 
         if active_ip and config_ip and active_ip != config_ip:
-            # Сетевой адрес изменился (например, из-за конфликта с wdtt). Перезапускаем интерфейс.
-            subprocess.run(["systemctl", "restart", AWG_UNIT], capture_output=True)
-            return self._is_up()
+            subprocess.run(["systemctl", "restart", unit], capture_output=True)
+            return self._is_up_iface(interface)
 
-        if self._is_up():
+        if self._is_up_iface(interface):
             r = subprocess.run(
-                ["bash", "-c", f"awg syncconf {AWG_INTERFACE} <(awg-quick strip {AWG_INTERFACE})"],
+                ["bash", "-c", f"awg syncconf {interface} <(awg-quick strip {interface})"],
                 capture_output=True, text=True,
             )
             return r.returncode == 0
-        r = subprocess.run(["systemctl", "start", AWG_UNIT], capture_output=True)
+        r = subprocess.run(["systemctl", "start", unit], capture_output=True)
         if r.returncode != 0:
-            r = subprocess.run(["awg-quick", "up", AWG_INTERFACE], capture_output=True)
+            r = subprocess.run(["awg-quick", "up", interface], capture_output=True)
         return r.returncode == 0
 
-    def _active_ip(self) -> str | None:
-        """Возвращает текущий активный IPv4-адрес интерфейса awg0."""
+    def _apply(self) -> bool:
+        return self._apply_iface(AWG_INTERFACE, AWG_CONF, AWG_UNIT)
+
+    def _active_ip_iface(self, interface: str) -> str | None:
         import platform
         if platform.system() != "Linux":
             return None
         try:
             r = subprocess.run(
-                ["ip", "-o", "-4", "addr", "show", AWG_INTERFACE],
+                ["ip", "-o", "-4", "addr", "show", interface],
                 capture_output=True, text=True, timeout=5
             )
             if not isinstance(r.stdout, str):
@@ -209,11 +255,29 @@ class AmneziaWGPlugin(BasePlugin):
         except Exception:
             return None
 
-    # ── разбор awg0.conf ────────────────────────────────────────────────
+    def _active_ip(self) -> str | None:
+        return self._active_ip_iface(AWG_INTERFACE)
+
+    # ── разбор конфигов ──────────────────────────────────────────────────
+
+    def _interface_block_for_conf(self, conf_path: Path, base: str, server_octet: str) -> str:
+        text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+        out: list[str] = []
+        for line in text.splitlines():
+            if line.strip() == "[Peer]" or line.strip().startswith("### "):
+                break
+            out.append(line)
+        block = "\n".join(out)
+        address = f"Address = {base}.{server_octet}/24"
+        if re.search(r"^Address\s*=", block, re.M):
+            return re.sub(r"^Address\s*=.*$", address, block, flags=re.M)
+        return f"{block.rstrip()}\n{address}" if block.strip() else address
 
     def _interface_block(self) -> str:
-        """Возвращает секцию [Interface] из awg0.conf (до первого [Peer])."""
-        text = AWG_CONF.read_text() if AWG_CONF.exists() else ""
+        if AWG_CONF.exists():
+            text = AWG_CONF.read_text(encoding="utf-8")
+        else:
+            text = ""
         out: list[str] = []
         for line in text.splitlines():
             if line.strip() == "[Peer]" or line.strip().startswith("### "):
@@ -222,20 +286,18 @@ class AmneziaWGPlugin(BasePlugin):
         return "\n".join(out)
 
     def _interface_block_for_network(self, base: str, server_octet: str) -> str:
-        """Возвращает [Interface] с Address из выбранной AWG-сети."""
         block = self._interface_block()
         address = f"Address = {base}.{server_octet}/24"
         if re.search(r"^Address\s*=", block, re.M):
             return re.sub(r"^Address\s*=.*$", address, block, flags=re.M)
         return f"{block.rstrip()}\n{address}" if block.strip() else address
 
-    def _existing_peer_ips(self) -> dict[str, str]:
-        """Возвращает {pubkey: octet} из текущих [Peer]-секций."""
-        if not AWG_CONF.exists():
+    def _existing_peer_ips_for_conf(self, conf_path: Path) -> dict[str, str]:
+        if not conf_path.exists():
             return {}
         result: dict[str, str] = {}
         cur_pub = None
-        for line in AWG_CONF.read_text().splitlines():
+        for line in conf_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             m = re.match(r"PublicKey\s*=\s*(\S+)", line)
             if m:
@@ -247,16 +309,34 @@ class AmneziaWGPlugin(BasePlugin):
                 cur_pub = None
         return result
 
-    def _network(self, state: AppState) -> tuple[str, str, str]:
-        """('10.x.y', server_octet, '10.x.y.0/24') из state или awg0.conf."""
-        network = self._resolve_network(state)
+    def _existing_peer_ips(self) -> dict[str, str]:
+        return self._existing_peer_ips_for_conf(AWG_CONF)
+
+    def _network_for_profile(self, state: AppState, conf_path: Path, profile_name: str, default_network: str) -> tuple[str, str, str]:
+        ps = state.protocols.get("amneziawg")
+        network = None
+        if ps and "profiles" in ps.config and profile_name in ps.config["profiles"]:
+            network = ps.config["profiles"][profile_name].get("network")
+        
+        if not network:
+            if conf_path.exists():
+                m = re.search(r"Address\s*=\s*(\d+)\.(\d+)\.(\d+)\.", conf_path.read_text(encoding="utf-8"))
+                if m:
+                    network = f"{m.group(1)}.{m.group(2)}.{m.group(3)}.0/24"
+            
+        if not network:
+            network = default_network
+            
         base = network.rsplit(".", 1)[0]
         server_octet = "1"
-        if AWG_CONF.exists():
-            m = re.search(r"Address\s*=\s*(\d+)\.(\d+)\.(\d+)\.(\d+)", AWG_CONF.read_text())
+        if conf_path.exists():
+            m = re.search(r"Address\s*=\s*(\d+)\.(\d+)\.(\d+)\.(\d+)", conf_path.read_text(encoding="utf-8"))
             if m and f"{m.group(1)}.{m.group(2)}.{m.group(3)}" == base:
                 server_octet = m.group(4)
         return base, server_octet, network
+
+    def _network(self, state: AppState) -> tuple[str, str, str]:
+        return self._network_for_profile(state, AWG_CONF, "desktop", "10.67.67.0/24")
 
     def _resolve_network(self, state: AppState) -> str:
         """Автовыбор свободной /24 подсети: из state → awg0.conf → сканирование."""
@@ -265,7 +345,7 @@ class AmneziaWGPlugin(BasePlugin):
         if ps and ps.config.get("network") and self._is_network_free(ps.config["network"], used):
             return ps.config["network"]
         if AWG_CONF.exists():
-            m = re.search(r"Address\s*=\s*(\d+)\.(\d+)\.(\d+)\.", AWG_CONF.read_text())
+            m = re.search(r"Address\s*=\s*(\d+)\.(\d+)\.(\d+)\.", AWG_CONF.read_text(encoding="utf-8"))
             if m:
                 network = f"{m.group(1)}.{m.group(2)}.{m.group(3)}.0/24"
                 if self._is_network_free(network, used):
@@ -307,37 +387,40 @@ class AmneziaWGPlugin(BasePlugin):
                 return str(i)
         return "254"
 
-    def _obfuscation(self) -> dict[str, str]:
-        """Поля обфускации из [Interface] (для клиентского конфига)."""
-        text = self._interface_block()
+    def _obfuscation_for_conf(self, conf_path: Path) -> dict[str, str]:
+        text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+        out_block: list[str] = []
+        for line in text.splitlines():
+            if line.strip() == "[Peer]" or line.strip().startswith("### "):
+                break
+            out_block.append(line)
+        interface_block = "\n".join(out_block)
+        
         out: dict[str, str] = {}
-        for key in OBFUSCATION_KEYS:
-            m = re.search(rf"^{key}\s*=\s*(\S+)", text, re.M)
+        for key in OBFUSCATION_KEYS_EXTENDED:
+            m = re.search(rf"^{key}\s*=\s*(\S+)", interface_block, re.M)
             if m:
                 out[key] = m.group(1)
         return out
 
+    def _obfuscation(self) -> dict[str, str]:
+        return self._obfuscation_for_conf(AWG_CONF)
+
     # ── генерация и получение ключей пира ────────────────────────────────
 
-    def _get_or_create_keys(self, user: User, state: AppState) -> dict:
-        """Получает или создаёт ключи пользователя для AWG.
-        
-        Ключи хранятся в user.credentials["amneziawg"]:
-          - private_key: приватный ключ (awg genkey)
-          - public_key: публичный ключ (awg pubkey)
-          - preshared_key: PSK (awg genpsk)
-        """
-        creds = user.credentials.get("amneziawg")
+    def _get_or_create_keys(self, user: User, state: AppState, profile: str = None) -> dict:
+        """Получает или создаёт ключи пользователя для AWG."""
+        profile_name = profile if profile else "desktop"
+        cred_key = f"amneziawg_{profile_name}" if profile_name != "desktop" else "amneziawg"
+        creds = user.credentials.get(cred_key)
         if (creds 
             and "private_key" in creds 
             and "public_key" in creds 
             and "preshared_key" in creds):
             return creds
         
-        # Генерируем новые ключи через awg
         priv_r = self._awg("genkey")
         if priv_r.returncode != 0:
-            # Фоллбэк: генерация через wg если awg недоступен
             priv_r = subprocess.run(
                 ["wg", "genkey"], capture_output=True, text=True
             )
@@ -358,7 +441,7 @@ class AmneziaWGPlugin(BasePlugin):
             )
         preshared_key = psk_r.stdout.strip()
         
-        user.credentials["amneziawg"] = {
+        user.credentials[cred_key] = {
             "private_key": private_key,
             "public_key": public_key,
             "preshared_key": preshared_key,
@@ -367,10 +450,18 @@ class AmneziaWGPlugin(BasePlugin):
         from hydra.core.state import save_state
         save_state(state)
         
-        return user.credentials["amneziawg"]
+        return user.credentials[cred_key]
 
-    def _server_pubkey(self) -> str:
-        m = re.search(r"PrivateKey\s*=\s*(\S+)", self._interface_block())
+    def _server_pubkey_for_conf(self, conf_path: Path) -> str:
+        text = conf_path.read_text(encoding="utf-8") if conf_path.exists() else ""
+        out: list[str] = []
+        for line in text.splitlines():
+            if line.strip() == "[Peer]" or line.strip().startswith("### "):
+                break
+            out.append(line)
+        interface_block = "\n".join(out)
+        
+        m = re.search(r"PrivateKey\s*=\s*(\S+)", interface_block)
         if not m:
             return ""
         r = self._awg("pubkey", _input=m.group(1))
@@ -382,6 +473,277 @@ class AmneziaWGPlugin(BasePlugin):
             if r.returncode != 0:
                 return ""
         return r.stdout.strip()
+
+    def _server_pubkey(self) -> str:
+        return self._server_pubkey_for_conf(AWG_CONF)
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Профили
+    # ═════════════════════════════════════════════════════════════════════
+
+    def get_profiles(self, state: AppState) -> list[dict]:
+        """Возвращает список активных профилей."""
+        ps = state.protocols.get("amneziawg")
+        if ps and "profiles" in ps.config:
+            res = []
+            for name, prof in ps.config["profiles"].items():
+                res.append({
+                    "name": name,
+                    "label": "Mobile" if name == "mobile" else "Desktop",
+                    "interface": prof["interface"],
+                    "unit": f"awg-quick@{prof['interface']}",
+                    "port": prof["port"],
+                    "preset": prof["preset"],
+                    "network": prof["network"],
+                    "obfuscation": prof["obfuscation"],
+                })
+            return res
+        
+        port = self._current_port()
+        _, _, network = self._network(state)
+        obf = self._obfuscation()
+        return [{
+            "name": "desktop",
+            "label": "Desktop",
+            "interface": AWG_INTERFACE,
+            "unit": AWG_UNIT,
+            "port": port,
+            "preset": "default",
+            "network": network,
+            "obfuscation": obf,
+        }]
+
+    def add_profile(self, name: str, preset: str, state: AppState) -> bool:
+        """Добавляет второй AWG-профиль (mobile)."""
+        if name != "mobile":
+            return False
+        
+        ps = state.protocols.get("amneziawg")
+        if not ps:
+            return False
+        
+        if "profiles" not in ps.config:
+            current_profiles = {}
+            port_0 = self._current_port()
+            _, _, network_0 = self._network(state)
+            obf_0 = self._obfuscation()
+            privkey_0 = ""
+            if AWG_CONF.exists():
+                m = re.search(r"PrivateKey\s*=\s*(\S+)", AWG_CONF.read_text(encoding="utf-8"))
+                if m:
+                    privkey_0 = m.group(1)
+            current_profiles["desktop"] = {
+                "interface": AWG_INTERFACE,
+                "port": port_0,
+                "preset": "default",
+                "network": network_0,
+                "server_private_key": privkey_0,
+                "obfuscation": obf_0,
+            }
+            ps.config["profiles"] = current_profiles
+
+        if "mobile" in ps.config["profiles"]:
+            return True
+        
+        port_1 = DEFAULT_PORT_1
+        used_nets = self._used_networks(state)
+        desktop_net = ps.config["profiles"]["desktop"]["network"]
+        if desktop_net not in used_nets:
+            used_nets.append(desktop_net)
+        
+        network_1 = "10.68.68.0/24"
+        if not self._is_network_free(network_1, used_nets):
+            for i in range(100, 256):
+                for j in range(0, 256):
+                    candidate = f"10.{i}.{j}.0/24"
+                    if self._is_network_free(candidate, used_nets):
+                        network_1 = candidate
+                        break
+                else:
+                    continue
+                break
+        
+        priv_r = self._awg("genkey")
+        if priv_r.returncode != 0:
+            priv_r = subprocess.run(["wg", "genkey"], capture_output=True, text=True)
+        server_private_key = priv_r.stdout.strip()
+        
+        from hydra.plugins.amneziawg.presets import generate_params
+        obf_1 = generate_params(preset)
+        
+        base = network_1.rsplit(".", 1)[0]
+        lines = [
+            "[Interface]",
+            f"PrivateKey = {server_private_key}",
+            f"Address = {base}.1/24",
+            f"ListenPort = {port_1}",
+            "MTU = 1280",
+            f"PostUp = iptables -I FORWARD -i {AWG_INTERFACE_1} -j ACCEPT; iptables -I FORWARD -o {AWG_INTERFACE_1} -j ACCEPT; iptables -t mangle -I FORWARD -i {AWG_INTERFACE_1} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
+            f"PostDown = iptables -D FORWARD -i {AWG_INTERFACE_1} -j ACCEPT; iptables -D FORWARD -o {AWG_INTERFACE_1} -j ACCEPT; iptables -t mangle -D FORWARD -i {AWG_INTERFACE_1} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
+        ]
+        for k, v in obf_1.items():
+            if v != "":
+                lines.append(f"{k} = {v}")
+        lines.append("")
+        
+        for user in state.users:
+            if user.blocked:
+                continue
+            
+            keys_1 = self._get_or_create_keys(user, state, profile="mobile")
+            pub_1 = keys_1["public_key"]
+            psk_1 = keys_1["preshared_key"]
+            
+            desktop_ips = self._existing_peer_ips()
+            keys_0 = user.credentials.get("amneziawg", {})
+            pub_0 = keys_0.get("public_key")
+            octet = None
+            if pub_0 and pub_0 in desktop_ips:
+                octet = desktop_ips[pub_0]
+            if not octet:
+                octet = "2"
+            
+            lines.extend([
+                f"### {user.email}",
+                "[Peer]",
+                f"PublicKey = {pub_1}",
+                f"PresharedKey = {psk_1}",
+                f"AllowedIPs = {base}.{octet}/32",
+                "",
+            ])
+            
+        AWG_CONF_1.parent.mkdir(parents=True, exist_ok=True)
+        AWG_CONF_1.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        AWG_CONF_1.chmod(0o600)
+        
+        ps.config["profiles"]["mobile"] = {
+            "interface": AWG_INTERFACE_1,
+            "port": port_1,
+            "preset": preset,
+            "network": network_1,
+            "server_private_key": server_private_key,
+            "obfuscation": obf_1,
+        }
+        from hydra.core.state import save_state
+        save_state(state)
+        
+        subprocess.run(["systemctl", "enable", "--now", AWG_UNIT_1], capture_output=True)
+        
+        from hydra.core.orchestrator import apply_config
+        apply_config(state)
+        return True
+
+    def remove_profile(self, name: str, state: AppState) -> bool:
+        """Удаляет профиль (останавливает интерфейс, удаляет конфиг)."""
+        if name != "mobile":
+            return False
+        
+        ps = state.protocols.get("amneziawg")
+        if not ps or "profiles" not in ps.config or "mobile" not in ps.config["profiles"]:
+            return False
+        
+        subprocess.run(["systemctl", "stop", AWG_UNIT_1], capture_output=True)
+        subprocess.run(["systemctl", "disable", AWG_UNIT_1], capture_output=True)
+        
+        if AWG_CONF_1.exists():
+            AWG_CONF_1.unlink()
+            
+        del ps.config["profiles"]["mobile"]
+        
+        for user in state.users:
+            if "amneziawg_mobile" in user.credentials:
+                del user.credentials["amneziawg_mobile"]
+                
+        from hydra.core.state import save_state
+        save_state(state)
+        
+        from hydra.core.orchestrator import apply_config
+        apply_config(state)
+        return True
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Ротация обфускации
+    # ═════════════════════════════════════════════════════════════════════
+
+    def rotate_obfuscation(self, state: AppState, 
+                            profile: str = None, 
+                            preset: str = None) -> bool:
+        """Ротация параметров обфускации без downtime."""
+        profile_name = profile if profile else "desktop"
+        
+        if profile_name == "mobile":
+            conf_path = AWG_CONF_1
+            interface = AWG_INTERFACE_1
+            unit = AWG_UNIT_1
+        else:
+            conf_path = AWG_CONF
+            interface = AWG_INTERFACE
+            unit = AWG_UNIT
+            
+        if not conf_path.exists():
+            return False
+            
+        ps = state.protocols.get("amneziawg")
+        if not preset:
+            if ps and "profiles" in ps.config and profile_name in ps.config["profiles"]:
+                preset = ps.config["profiles"][profile_name].get("preset", "default")
+            else:
+                preset = "default"
+                
+        from hydra.plugins.amneziawg.presets import generate_params
+        new_params = generate_params(preset)
+        
+        text = conf_path.read_text(encoding="utf-8")
+        
+        keys_to_update = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"]
+        for key in keys_to_update:
+            val = new_params.get(key)
+            if val is not None:
+                if re.search(rf"^{key}\s*=", text, re.M):
+                    text = re.sub(rf"^{key}\s*=.*$", f"{key} = {val}", text, flags=re.M)
+                else:
+                    if "[Peer]" in text:
+                        text = text.replace("[Peer]", f"{key} = {val}\n\n[Peer]", 1)
+                    else:
+                        text = text.rstrip() + f"\n{key} = {val}\n"
+                        
+        i1_val = new_params.get("I1", "")
+        if i1_val:
+            if re.search(r"^I1\s*=", text, re.M):
+                text = re.sub(r"^I1\s*=.*$", f"I1 = {i1_val}", text, flags=re.M)
+            else:
+                if "[Peer]" in text:
+                    text = text.replace("[Peer]", f"I1 = {i1_val}\n\n[Peer]", 1)
+                else:
+                    text = text.rstrip() + f"\nI1 = {i1_val}\n"
+        else:
+            text = re.sub(r"^I1\s*=.*\n?", "", text, flags=re.M)
+            
+        conf_path.write_text(text, encoding="utf-8")
+        conf_path.chmod(0o600)
+        
+        r = subprocess.run(
+            ["bash", "-c", f"awg syncconf {interface} <(awg-quick strip {interface})"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            subprocess.run(["systemctl", "restart", unit], capture_output=True)
+            
+        if ps:
+            if "profiles" not in ps.config:
+                ps.config["profiles"] = {}
+            if profile_name not in ps.config["profiles"]:
+                ps.config["profiles"][profile_name] = {
+                    "interface": interface,
+                    "port": 51820 if profile_name == "desktop" else 51821,
+                    "network": "10.67.67.0/24" if profile_name == "desktop" else "10.68.68.0/24",
+                }
+            ps.config["profiles"][profile_name]["preset"] = preset
+            ps.config["profiles"][profile_name]["obfuscation"] = new_params
+            from hydra.core.state import save_state
+            save_state(state)
+            
+        return True
 
     # ═════════════════════════════════════════════════════════════════════
     #  Per-user TRANSPORT-методы
@@ -405,28 +767,46 @@ class AmneziaWGPlugin(BasePlugin):
     #  Клиентский конфиг
     # ═════════════════════════════════════════════════════════════════════
 
-    def generate_client_config(self, user: User, state: AppState) -> str:
+    def generate_client_config(self, user: User, state: AppState, profile: str = None) -> str:
         """Валидный клиентский .conf. Гарантирует, что пир есть на сервере."""
-        if not AWG_CONF.exists():
+        profile_name = profile if profile else "desktop"
+        if profile_name == "mobile":
+            conf_path = AWG_CONF_1
+        else:
+            conf_path = AWG_CONF
+
+        if not conf_path.exists():
             return ""
 
-        keys = self._get_or_create_keys(user, state)
+        keys = self._get_or_create_keys(user, state, profile=profile_name)
         pub = keys["public_key"]
-        ip = self._existing_peer_ips().get(pub)
+        ip = self._existing_peer_ips_for_conf(conf_path).get(pub)
         if not ip:
             self.configure(state)
             self.apply(state)
-            ip = self._existing_peer_ips().get(pub)
+            ip = self._existing_peer_ips_for_conf(conf_path).get(pub)
         if not ip:
             return ""
-        base, _, _ = self._network(state)
+        
+        base, _, _ = self._network_for_profile(
+            state, conf_path, profile_name,
+            "10.67.67.0/24" if profile_name == "desktop" else "10.68.68.0/24"
+        )
 
-        server_pub = self._server_pubkey()
-        port = self._current_port()
+        server_pub = self._server_pubkey_for_conf(conf_path)
+        
+        if profile_name == "mobile":
+            port = DEFAULT_PORT_1
+            ps = state.protocols.get("amneziawg")
+            if ps and "profiles" in ps.config and "mobile" in ps.config["profiles"]:
+                port = ps.config["profiles"]["mobile"].get("port", DEFAULT_PORT_1)
+        else:
+            port = self._current_port()
+
         endpoint = state.network.server_ip or self._params().get("SERVER_PUB_IP") or self._public_ip()
-        obf = self._obfuscation()
+        obf = self._obfuscation_for_conf(conf_path)
 
-        mtu_m = re.search(r"^MTU\s*=\s*(\d+)", self._interface_block(), re.M)
+        mtu_m = re.search(r"^MTU\s*=\s*(\d+)", self._interface_block_for_conf(conf_path, base, "1"), re.M)
         mtu = mtu_m.group(1) if (mtu_m and mtu_m.group(1) != "1420") else "1376"
 
         dns = self._params().get("CLIENT_DNS_1", "1.1.1.1")
@@ -443,8 +823,8 @@ class AmneziaWGPlugin(BasePlugin):
             f"MTU = {mtu}",
             "",
         ]
-        for key in OBFUSCATION_KEYS:
-            if key in obf:
+        for key in OBFUSCATION_KEYS_EXTENDED:
+            if key in obf and obf[key] != "":
                 lines.append(f"{key} = {obf[key]}")
         lines += [
             "",
@@ -457,9 +837,10 @@ class AmneziaWGPlugin(BasePlugin):
         ]
         return "\n".join(lines)
 
-    def client_link(self, user: User, state: AppState) -> str:
+    def client_link(self, user: User, state: AppState, profile: str = None) -> str:
         """Ссылка wg:// для AmneziaWG-клиентов на базе клиентского конфига."""
-        conf = self.generate_client_config(user, state)
+        profile_name = profile if profile else "desktop"
+        conf = self.generate_client_config(user, state, profile=profile_name)
         if not conf:
             return ""
 
@@ -476,14 +857,16 @@ class AmneziaWGPlugin(BasePlugin):
         if f("PrivateKey"):   params.append(f"private_key={f('PrivateKey')}")
         if f("Address"):      params.append(f"local_address={f('Address')}")
         params.append("enable_amnezia=true")
-        for key in OBFUSCATION_KEYS:
+        for key in OBFUSCATION_KEYS_EXTENDED:
             v = f(key)
             if v:
                 params.append(f"{key.lower()}={v}")
         if f("PublicKey"):    params.append(f"public_key={f('PublicKey')}")
         if f("PresharedKey"): params.append(f"pre_shared_key={f('PresharedKey')}")
         params.append("persistent_keepalive_interval=25")
-        return f"wg://{host}:{port}?{'&'.join(params)}#{user.email}%20AWG"
+        
+        label = "AWG Mobile" if profile_name == "mobile" else "AWG Desktop"
+        return f"wg://{host}:{port}?{'&'.join(params)}#{user.email}%20{label}"
 
     # ═════════════════════════════════════════════════════════════════════
     #  Статус / трафик
@@ -494,69 +877,96 @@ class AmneziaWGPlugin(BasePlugin):
         return PluginStatus(
             installed=installed,
             enabled=AWG_CONF.exists(),
-            running=installed and self._is_up(),
+            running=installed and (self._is_up() or self._is_up_iface(AWG_INTERFACE_1)),
             port=self._current_port() if installed else 0,
         )
 
     def traffic(self, state: AppState) -> dict[str, int]:
         """{email: bytes}. Строит pubkey→email из state.users."""
-        if not self._installed() or not self._is_up():
-            return {}
-        r = self._awg("show", AWG_INTERFACE, "transfer")
-        if r.returncode != 0:
+        if not self._installed():
             return {}
 
         pub_to_email = {}
         for u in state.users:
             if not u.blocked:
-                creds = u.credentials.get("amneziawg", {})
-                pub = creds.get("public_key")
-                if pub:
-                    pub_to_email[pub] = u.email
+                creds_d = u.credentials.get("amneziawg", {})
+                pub_d = creds_d.get("public_key")
+                if pub_d:
+                    pub_to_email[pub_d] = u.email
+                creds_m = u.credentials.get("amneziawg_mobile", {})
+                pub_m = creds_m.get("public_key")
+                if pub_m:
+                    pub_to_email[pub_m] = u.email
 
         result: dict[str, int] = {}
-        for line in r.stdout.strip().splitlines():
-            parts = line.split()
-            if len(parts) >= 3:
-                pub, rx, tx = parts[0], parts[1], parts[2]
-                email = pub_to_email.get(pub)
-                if email:
-                    result[email] = result.get(email, 0) + int(rx) + int(tx)
+        
+        interfaces = [AWG_INTERFACE]
+        if self._is_up_iface(AWG_INTERFACE_1):
+            interfaces.append(AWG_INTERFACE_1)
+            
+        for iface in interfaces:
+            r = self._awg("show", iface, "transfer")
+            if r.returncode != 0:
+                continue
+            for line in r.stdout.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 3:
+                    pub, rx, tx = parts[0], parts[1], parts[2]
+                    email = pub_to_email.get(pub)
+                    if email:
+                        result[email] = result.get(email, 0) + int(rx) + int(tx)
         return result
 
     def connected_clients(self, state: AppState | None = None) -> list[dict]:
         """Список пиров с email, трафиком и последним рукопожатием."""
-        if not self._installed() or not self._is_up():
+        if not self._installed():
             return []
-            
+
         if state:
             peer_map = {}
             for u in state.users:
-                creds = u.credentials.get("amneziawg", {})
-                pub = creds.get("public_key")
-                if pub:
-                    peer_map[pub] = u.email
+                creds_d = u.credentials.get("amneziawg", {})
+                pub_d = creds_d.get("public_key")
+                if pub_d:
+                    peer_map[pub_d] = u.email
+                creds_m = u.credentials.get("amneziawg_mobile", {})
+                pub_m = creds_m.get("public_key")
+                if pub_m:
+                    peer_map[pub_m] = u.email
             self._peer_map = peer_map
 
-        r = self._awg("show", AWG_INTERFACE, "dump")
-        if r.returncode != 0:
-            return []
+        interfaces = [AWG_INTERFACE]
+        if self._is_up_iface(AWG_INTERFACE_1):
+            interfaces.append(AWG_INTERFACE_1)
+
         clients: list[dict] = []
-        for line in r.stdout.strip().splitlines()[1:]:
-            p = line.split("\t")
-            if len(p) < 8:
+        for iface in interfaces:
+            r = self._awg("show", iface, "dump")
+            if r.returncode != 0:
                 continue
-            pub = p[0]
-            handshake = int(p[4]) if p[4].isdigit() else 0
-            clients.append({
-                "pubkey": pub,
-                "email": self._peer_map.get(pub, "?"),
-                "endpoint": p[2],
-                "last_handshake": handshake,
-                "online": handshake > 0,
-                "rx": int(p[5]) if p[5].isdigit() else 0,
-                "tx": int(p[6]) if p[6].isdigit() else 0,
-            })
+            for line in r.stdout.strip().splitlines()[1:]:
+                p = line.split("\t")
+                if len(p) < 8:
+                    continue
+                pub = p[0]
+                handshake = int(p[4]) if p[4].isdigit() else 0
+                
+                email = self._peer_map.get(pub, "?")
+                if isinstance(email, tuple):
+                    email = email[0]
+                
+                profile = "Mobile" if iface == AWG_INTERFACE_1 else "Desktop"
+                
+                clients.append({
+                    "pubkey": pub,
+                    "email": email,
+                    "profile": profile,
+                    "endpoint": p[2],
+                    "last_handshake": handshake,
+                    "online": handshake > 0,
+                    "rx": int(p[5]) if p[5].isdigit() else 0,
+                    "tx": int(p[6]) if p[6].isdigit() else 0,
+                })
         return clients
 
     # ═════════════════════════════════════════════════════════════════════
@@ -566,8 +976,18 @@ class AmneziaWGPlugin(BasePlugin):
     def on_enable(self, state: AppState) -> None:
         self._ensure_ip_forward()
 
-        # Миграция: превентивно удаляем старые iptables MASQUERADE
-        # из прошлых версий, где AWG работал без sing-box
+        # Hardware tuning при первом включении
+        ps = state.protocols.get("amneziawg")
+        if ps and not ps.config.get("hw_tuned"):
+            try:
+                from hydra.plugins.amneziawg.tuning import hw_tune_all
+                hw_tune_all()
+                ps.config["hw_tuned"] = True
+                from hydra.core.state import save_state
+                save_state(state)
+            except Exception:
+                pass
+
         try:
             self._remove_nat(state)
         except Exception:
@@ -575,26 +995,25 @@ class AmneziaWGPlugin(BasePlugin):
 
         self.configure(state)
         self.apply(state)
-        if not self._is_up():
-            subprocess.run(["systemctl", "enable", "--now", AWG_UNIT], capture_output=True)
+        
+        profiles = self.get_profiles(state)
+        for p in profiles:
+            unit = p.get("unit", AWG_UNIT)
+            if not self._is_up_iface(p["interface"]):
+                subprocess.run(["systemctl", "enable", "--now", unit], capture_output=True)
 
-        # НЕ вызываем _ensure_nat() — MASQUERADE больше не нужен,
-        # трафик идёт через sing-box TPROXY → sing-box routing.
-
-        # FORWARD правила оставляем — ядру нужно разрешить пересылку
-        # пакетов с awg0 до того, как они попадут в nftables TPROXY.
         self._ensure_forward()
 
     def on_disable(self, state: AppState) -> None:
         self._remove_forward()
 
-        # Превентивная зачистка: удаляем NAT, если он остался от старой версии
         try:
             self._remove_nat(state)
         except Exception:
             pass
 
         subprocess.run(["systemctl", "stop", AWG_UNIT], capture_output=True)
+        subprocess.run(["systemctl", "stop", AWG_UNIT_1], capture_output=True)
 
     @staticmethod
     def _ensure_ip_forward():
@@ -637,21 +1056,23 @@ class AmneziaWGPlugin(BasePlugin):
 
     def _ensure_forward(self):
         """Добавляет ACCEPT в FORWARD и MSS clamping для AWG (иначе policy drop и MTU)."""
-        for rule in (["-i", AWG_INTERFACE], ["-o", AWG_INTERFACE]):
-            r = subprocess.run(
-                ["iptables", "-C", "FORWARD", *rule, "-j", "ACCEPT"],
-                capture_output=True,
-            )
-            if r.returncode != 0:
-                subprocess.run(
-                    ["iptables", "-I", "FORWARD", *rule, "-j", "ACCEPT"],
+        interfaces = [AWG_INTERFACE]
+        if AWG_CONF_1.exists():
+            interfaces.append(AWG_INTERFACE_1)
+
+        for iface in interfaces:
+            for rule in (["-i", iface], ["-o", iface]):
+                r = subprocess.run(
+                    ["iptables", "-C", "FORWARD", *rule, "-j", "ACCEPT"],
                     capture_output=True,
                 )
+                if r.returncode != 0:
+                    subprocess.run(
+                        ["iptables", "-I", "FORWARD", *rule, "-j", "ACCEPT"],
+                        capture_output=True,
+                    )
 
-        # MSS clamping для трафика от AWG в интернет (AWG оверхед > MTU ens3)
-        for rule in (
-            ["-i", AWG_INTERFACE, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN"],
-        ):
+            rule = ["-i", iface, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN"]
             r = subprocess.run(
                 ["iptables", "-t", "mangle", "-C", "FORWARD", *rule, "-j", "TCPMSS", "--clamp-mss-to-pmtu"],
                 capture_output=True,
@@ -664,15 +1085,20 @@ class AmneziaWGPlugin(BasePlugin):
 
     def _remove_forward(self):
         """Удаляет ACCEPT-правила AWG из FORWARD и mangle."""
-        for rule in (["-i", AWG_INTERFACE], ["-o", AWG_INTERFACE]):
+        interfaces = [AWG_INTERFACE]
+        if AWG_CONF_1.exists():
+            interfaces.append(AWG_INTERFACE_1)
+            
+        for iface in interfaces:
+            for rule in (["-i", iface], ["-o", iface]):
+                subprocess.run(
+                    ["iptables", "-D", "FORWARD", *rule, "-j", "ACCEPT"],
+                    capture_output=True,
+                )
             subprocess.run(
-                ["iptables", "-D", "FORWARD", *rule, "-j", "ACCEPT"],
+                ["iptables", "-t", "mangle", "-D", "FORWARD", "-i", iface, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"],
                 capture_output=True,
             )
-        subprocess.run(
-            ["iptables", "-t", "mangle", "-D", "FORWARD", "-i", AWG_INTERFACE, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"],
-            capture_output=True,
-        )
 
     @staticmethod
     def _wan_iface() -> str:
@@ -692,8 +1118,20 @@ class AmneziaWGPlugin(BasePlugin):
         return AWG_BIN.exists() or shutil.which("awg") is not None
 
     def _is_up(self) -> bool:
+        import platform
+        if platform.system() != "Linux":
+            return False
         return subprocess.run(
             ["ip", "link", "show", AWG_INTERFACE], capture_output=True).returncode == 0
+
+    def _is_up_iface(self, interface: str) -> bool:
+        if interface == AWG_INTERFACE:
+            return self._is_up()
+        import platform
+        if platform.system() != "Linux":
+            return False
+        return subprocess.run(
+            ["ip", "link", "show", interface], capture_output=True).returncode == 0
 
     def _current_port(self) -> int:
         r = self._awg("show", AWG_INTERFACE)

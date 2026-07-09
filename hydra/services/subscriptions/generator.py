@@ -309,9 +309,16 @@ def generate_links(user: User, state: AppState) -> list[str]:
     links: list[str] = []
     for p in enabled(state, PluginCategory.TRANSPORT):
         try:
-            link = p.client_link(user, state)
-            if link:
-                links.append(link)
+            if p.meta.name == "amneziawg":
+                profiles = p.get_profiles(state)
+                for prof in profiles:
+                    link = p.client_link(user, state, profile=prof["name"])
+                    if link:
+                        links.append(link)
+            else:
+                link = p.client_link(user, state)
+                if link:
+                    links.append(link)
         except Exception:
             pass
     return links
@@ -362,11 +369,14 @@ def generate_base64_sub(user: User, state: AppState) -> str:
     if awg_plugin:
         try:
             if awg_plugin.status().enabled:
-                conf_text = awg_plugin.generate_client_config(user, state)
-                if conf_text:
-                    awg_sn = generate_awg_sn_link(conf_text, f"{user.email} AWG")
-                    if awg_sn:
-                        extended_links.append(awg_sn)
+                profiles = awg_plugin.get_profiles(state)
+                for prof in profiles:
+                    conf_text = awg_plugin.generate_client_config(user, state, profile=prof["name"])
+                    if conf_text:
+                        tag = f"{user.email} AWG {prof['label']}"
+                        awg_sn = generate_awg_sn_link(conf_text, tag)
+                        if awg_sn:
+                            extended_links.append(awg_sn)
         except Exception:
             pass
             

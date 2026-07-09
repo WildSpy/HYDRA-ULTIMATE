@@ -583,6 +583,9 @@ def menu_network_services(state: AppState):
 
 def menu_plugin(state: AppState, p):
     """Универсальное меню плагина."""
+    if p.meta.name == "amneziawg":
+        _menu_amneziawg(state, p)
+        return
     if p.meta.name == "dnscrypt":
         from hydra.plugins.dnscrypt.manager import menu_dnscrypt
         menu_dnscrypt(state, p)
@@ -2306,3 +2309,243 @@ def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | Non
         
     save_state(state)
     orchestrator.apply_config(state)
+
+
+def _menu_amneziawg(state: AppState, p):
+    from hydra.core.state import get_protocol
+    
+    while True:
+        clear()
+        ps = get_protocol(state, p.meta.name)
+        
+        # Статус
+        try:
+            st = p.status()
+            lines = [
+                f"  Статус:      {'🟢 Работает' if st.running else '🔴 Остановлен'}",
+                f"  Установлен:  {_ok(st.installed)}",
+                f"  Включён:     {_ok(st.enabled)}",
+            ]
+            profiles = p.get_profiles(state)
+            lines.append(f"  Профили:     {len(profiles)} active")
+            for prof in profiles:
+                lines.append(f"    - {prof['label']} ({prof['interface']}) on port {prof['port']} [{prof['preset']}]")
+            
+            panel("🛡️ AMNEZIAWG CONTROL", lines)
+        except Exception as e:
+            panel("AMNEZIAWG CONTROL", [f"  Статус недоступен: {e}"])
+        print()
+        
+        options = []
+        if not ps.installed:
+            options.append(("1", "🔧 Установить", p.meta.description))
+        else:
+            if ps.enabled:
+                options.append(("1", "⏸️  Выключить", "Отключить протокол"))
+                options.append(("2", "👥 Клиенты", "Подключённые клиенты и трафик"))
+                options.append(("3", "👤 Профили AWG", "Управление профилями (Desktop/Mobile)"))
+                options.append(("4", "🔄 Ротация обфускации", "Ротировать параметры обфускации без downtime"))
+                options.append(("5", "⚙️ Оптимизация VPS", "Hardware-aware sysctl/swap/NIC автотюнинг"))
+            else:
+                options.append(("1", "▶️  Включить", "Активировать протокол"))
+            
+            options.append(("8", "🔄 Переустановить", "Переустановка протокола"))
+            options.append(("9", "❌ Удалить", "Полное удаление"))
+            
+        options.append(("0", "↩ Назад", ""))
+        
+        choice = menu(options, "AMNEZIAWG")
+        
+        if choice == "0":
+            break
+            
+        elif choice == "1":
+            if not ps.installed:
+                info("Установка...")
+                ok = orchestrator.install_plugin(state, p.meta.name)
+                if ok:
+                    success("Установлено!")
+                    try:
+                        if orchestrator.enable(state, p.meta.name):
+                            success("Протокол включён и применён")
+                        else:
+                            error("Ошибка применения конфигурации")
+                    except Exception as e:
+                        error(f"Ошибка активации протокола: {e}")
+                else:
+                    error("Ошибка установки")
+            elif ps.enabled:
+                if orchestrator.disable(state, p.meta.name):
+                    success("Протокол выключен")
+                else:
+                    error("Ошибка применения конфигурации")
+            else:
+                try:
+                    if orchestrator.enable(state, p.meta.name):
+                        success("Протокол включён")
+                    else:
+                        error("Ошибка применения конфигурации")
+                except Exception as e:
+                    error(f"Ошибка активации протокола: {e}")
+            prompt("Нажмите Enter")
+            
+        elif choice == "2" and ps.installed and ps.enabled:
+            _show_plugin_clients(state, p)
+            
+        elif choice == "3" and ps.installed and ps.enabled:
+            _manage_awg_profiles(state, p)
+            
+        elif choice == "4" and ps.installed and ps.enabled:
+            _rotate_awg_obfuscation(state, p)
+            
+        elif choice == "5" and ps.installed and ps.enabled:
+            _tune_awg_hardware(state, p)
+            
+        elif choice == "8" and ps.installed:
+            if confirm("Переустановить?", default=False):
+                orchestrator.uninstall_plugin(state, p.meta.name)
+                ok = orchestrator.install_plugin(state, p.meta.name)
+                if ok:
+                    try:
+                        orchestrator.enable(state, p.meta.name)
+                        success("Переустановлено!")
+                    except Exception as e:
+                        error(f"Ошибка активации: {e}")
+                else:
+                    error("Ошибка установки")
+                prompt("Нажмите Enter")
+                
+        elif choice == "9" and ps.installed:
+            if confirm("Вы уверены, что хотите полностью удалить AmneziaWG?", default=False):
+                orchestrator.uninstall_plugin(state, p.meta.name)
+                success("Удалено")
+                prompt("Нажмите Enter")
+
+
+def _manage_awg_profiles(state: AppState, p):
+    while True:
+        clear()
+        profiles = p.get_profiles(state)
+        lines = []
+        for i, prof in enumerate(profiles, 1):
+            lines.append(f"  {i}. {prof['label']} ({prof['interface']}) on port {prof['port']}")
+            lines.append(f"     Preset: {prof['preset']}")
+            lines.append(f"     Network: {prof['network']}")
+        panel("📁 УПРАВЛЕНИЕ ПРОФИЛЯМИ AWG", lines)
+        
+        options = []
+        has_mobile = any(prof["name"] == "mobile" for prof in profiles)
+        if not has_mobile:
+            options.append(("1", "➕ Добавить мобильный профиль", "Создать профиль с мобильным пресетом"))
+        else:
+            options.append(("2", "❌ Удалить мобильный профиль", "Удалить профиль с мобильным пресетом"))
+            
+        options.append(("0", "↩ Назад", ""))
+        
+        choice = menu(options, "AWG PROFILES")
+        if choice == "0":
+            break
+            
+        elif choice == "1" and not has_mobile:
+            from hydra.plugins.amneziawg.presets import list_presets
+            presets = list_presets()
+            preset_options = []
+            for idx, pr in enumerate(presets, 1):
+                preset_options.append((str(idx), pr["label"], pr["description"]))
+            preset_options.append(("0", "Отмена", ""))
+            
+            p_choice = menu(preset_options, "ВЫБЕРИТЕ ПРЕСЕТ ДЛЯ МОБИЛЬНОГО ПРОФИЛЯ")
+            if p_choice == "0" or not p_choice.isdigit():
+                continue
+            
+            p_idx = int(p_choice) - 1
+            if 0 <= p_idx < len(presets):
+                preset_name = presets[p_idx]["name"]
+                info(f"Создание профиля с пресетом {preset_name}...")
+                if p.add_profile("mobile", preset_name, state):
+                    success("Мобильный профиль успешно создан!")
+                else:
+                    error("Не удалось создать мобильный профиль")
+                prompt("Нажмите Enter")
+                
+        elif choice == "2" and has_mobile:
+            if confirm("Удалить мобильный профиль?", default=False):
+                info("Удаление...")
+                if p.remove_profile("mobile", state):
+                    success("Профиль удален")
+                else:
+                    error("Ошибка удаления")
+                prompt("Нажмите Enter")
+
+
+def _rotate_awg_obfuscation(state: AppState, p):
+    profiles = p.get_profiles(state)
+    options = []
+    for idx, prof in enumerate(profiles, 1):
+        options.append((str(idx), f"Ротировать {prof['label']} ({prof['interface']})", f"Текущий пресет: {prof['preset']}"))
+    options.append(("0", "Отмена", ""))
+    
+    choice = menu(options, "РОТАЦИЯ ОБФУСКАЦИИ")
+    if choice == "0" or not choice.isdigit():
+        return
+        
+    p_idx = int(choice) - 1
+    if 0 <= p_idx < len(profiles):
+        prof = profiles[p_idx]
+        
+        from hydra.plugins.amneziawg.presets import list_presets
+        presets = list_presets()
+        preset_options = []
+        for idx, pr in enumerate(presets, 1):
+            preset_options.append((str(idx), pr["label"], pr["description"]))
+        preset_options.append(("0", "Отмена", ""))
+        
+        p_choice = menu(preset_options, f"ВЫБЕРИТЕ ПРЕСЕТ ДЛЯ {prof['label'].upper()}")
+        if p_choice == "0" or not p_choice.isdigit():
+            return
+            
+        pr_idx = int(p_choice) - 1
+        if 0 <= pr_idx < len(presets):
+            preset_name = presets[pr_idx]["name"]
+            info("Генерация новых параметров обфускации и hot-reload...")
+            if p.rotate_obfuscation(state, profile=prof["name"], preset=preset_name):
+                success("Параметры успешно ротированы без downtime!")
+                info("Клиенты автоматически получат новые настройки при обновлении подписки.")
+            else:
+                error("Ошибка ротации")
+            prompt("Нажмите Enter")
+
+
+def _tune_awg_hardware(state: AppState, p):
+    info("Анализ и оптимизация VPS...")
+    from hydra.plugins.amneziawg.tuning import hw_tune_all
+    report = hw_tune_all()
+    
+    lines = []
+    
+    # sysctl
+    sysctl_changed = sum(1 for v in report["sysctl"].values() if v.get("changed"))
+    lines.append("🎛️  Параметры sysctl:")
+    if sysctl_changed:
+        lines.append(f"     Применено {sysctl_changed} новых оптимизаций.")
+    else:
+        lines.append("     Все параметры sysctl уже оптимальны.")
+        
+    # swap
+    swap = report["swap"]
+    lines.append("💾  Файл подкачки (Swap):")
+    if swap["changed"]:
+        lines.append(f"     Создан /swapfile размером {swap['target_swap_mb']}M.")
+    else:
+        lines.append(f"     Текущий swap ({swap['current_swap_mb']}M) достаточен.")
+        
+    # nic
+    nic = report["nic"]
+    lines.append("🔌  Сетевой интерфейс:")
+    if nic["changed"]:
+        lines.append(f"     Включены offloads {nic['changed']} на {nic['iface']}.")
+    elif nic["skipped"]:
+        lines.append(f"     Пропущено: {nic['skipped']}.")
+        
+    panel("✅ VPS TUNING REPORT", lines)
+    prompt("Нажмите Enter")
