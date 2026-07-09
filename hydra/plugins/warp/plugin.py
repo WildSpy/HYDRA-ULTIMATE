@@ -74,6 +74,9 @@ class WarpPlugin(BasePlugin):
             log_path.parent.mkdir(parents=True, exist_ok=True)
             WGCF_PROFILE.parent.mkdir(parents=True, exist_ok=True)
 
+            # Принудительно убиваем любые зависшие процессы wgcf, чтобы избежать Text file busy
+            subprocess.run(["pkill", "-9", "wgcf"], capture_output=True)
+
             # Скачиваем wgcf напрямую через GitHub API, если его нет
             if not WGCF_BIN.exists():
                 arch = detect_arch()
@@ -129,6 +132,7 @@ class WarpPlugin(BasePlugin):
             return False
 
     def uninstall(self) -> bool:
+        subprocess.run(["pkill", "-9", "wgcf"], capture_output=True)
         if WGCF_PROFILE.exists():
             WGCF_PROFILE.unlink()
         if WGCF_BIN.exists():
