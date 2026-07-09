@@ -394,6 +394,22 @@ class TrustTunnelPlugin(BasePlugin):
         return "", ""
 
     def _obtain_cert_certbot(self, domain: str) -> bool:
+        # Проверяем, есть ли уже валидный сертификат
+        from pathlib import Path
+        cert_path = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem")
+        key_path = Path(f"/etc/letsencrypt/live/{domain}/privkey.pem")
+        if cert_path.exists() and key_path.exists():
+            try:
+                r = subprocess.run(
+                    ["openssl", "x509", "-checkend", "2592000", "-noout", "-in", str(cert_path)],
+                    capture_output=True
+                )
+                if r.returncode == 0:
+                    print(f"  Сертификат для {domain} уже существует и действителен.")
+                    return True
+            except Exception:
+                pass
+
         import shutil
         from hydra.utils.firewall import is_ufw_active
 
@@ -402,26 +418,14 @@ class TrustTunnelPlugin(BasePlugin):
             subprocess.run(["apt-get", "update"], capture_output=True)
             subprocess.run(["apt-get", "install", "-y", "certbot"], capture_output=True)
 
-        caddy_was_active = False
-        r_caddy = subprocess.run(["systemctl", "is-active", "caddy-naive"], capture_output=True, text=True)
-        if r_caddy.stdout.strip() == "active":
-            print("  Временно останавливаю caddy-naive...")
-            subprocess.run(["systemctl", "stop", "caddy-naive"], capture_output=True)
-            caddy_was_active = True
-
-        nginx_was_active = False
-        r_nginx = subprocess.run(["systemctl", "is-active", "nginx"], capture_output=True, text=True)
-        if r_nginx.stdout.strip() == "active":
-            print("  Временно останавливаю nginx...")
-            subprocess.run(["systemctl", "stop", "nginx"], capture_output=True)
-            nginx_was_active = True
-
-        apache_was_active = False
-        r_apache = subprocess.run(["systemctl", "is-active", "apache2"], capture_output=True, text=True)
-        if r_apache.stdout.strip() == "active":
-            print("  Временно останавливаю apache2...")
-            subprocess.run(["systemctl", "stop", "apache2"], capture_output=True)
-            apache_was_active = True
+        services_to_stop = ["caddy-l4", "caddy-naive", "nginx", "apache2"]
+        was_running = []
+        for s in services_to_stop:
+            r = subprocess.run(["systemctl", "is-active", s], capture_output=True, text=True)
+            if r.stdout.strip() == "active":
+                print(f"  Временно останавливаю {s}...")
+                subprocess.run(["systemctl", "stop", s], capture_output=True)
+                was_running.append(s)
 
         ufw_opened = False
         ipt_opened = False
@@ -443,6 +447,7 @@ class TrustTunnelPlugin(BasePlugin):
             "-d", domain,
             "--non-interactive", "--agree-tos",
             "--register-unsafely-without-email",
+            "--keep-until-expiring",
         ], capture_output=True, text=True)
 
         success = r.returncode == 0
@@ -457,15 +462,9 @@ class TrustTunnelPlugin(BasePlugin):
                 "iptables", "-D", "INPUT", "-p", "tcp", "--dport", "80", "-j", "ACCEPT"
             ], capture_output=True)
 
-        if caddy_was_active:
-            print("  Восстанавливаю caddy-naive...")
-            subprocess.run(["systemctl", "start", "caddy-naive"], capture_output=True)
-        if nginx_was_active:
-            print("  Восстанавливаю nginx...")
-            subprocess.run(["systemctl", "start", "nginx"], capture_output=True)
-        if apache_was_active:
-            print("  Восстанавливаю apache2...")
-            subprocess.run(["systemctl", "start", "apache2"], capture_output=True)
+        for s in was_running:
+            print(f"  Восстанавливаю {s}...")
+            subprocess.run(["systemctl", "start", s], capture_output=True)
 
         return success
 

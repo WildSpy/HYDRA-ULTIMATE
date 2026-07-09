@@ -104,11 +104,9 @@ class NaivePlugin(BasePlugin):
 
         cert_file, key_file = self._resolve_certs(domain, ps)
         if not cert_file or not key_file:
-            if self._obtain_cert_certbot(domain):
-                cert_file, key_file = self._find_existing_cert(domain)
-                if ps and ps.config is not None:
-                    ps.config["cert_file"] = cert_file
-                    ps.config["key_file"] = key_file
+            # Не запрашиваем сертификат в configure() — это делается в on_enable()
+            self._pending_cfg = None
+            return ConfigFragment()
 
         caddyfile = self._build_caddyfile(
             domain=domain,
@@ -518,6 +516,22 @@ class NaivePlugin(BasePlugin):
 
     def _obtain_cert_certbot(self, domain: str) -> bool:
         """Автоматическое получение сертификата через certbot (HTTP-01 challenge, порт 80)."""
+        # Проверяем, есть ли уже валидный сертификат
+        from pathlib import Path
+        cert_path = Path(f"/etc/letsencrypt/live/{domain}/fullchain.pem")
+        key_path = Path(f"/etc/letsencrypt/live/{domain}/privkey.pem")
+        if cert_path.exists() and key_path.exists():
+            try:
+                r = subprocess.run(
+                    ["openssl", "x509", "-checkend", "2592000", "-noout", "-in", str(cert_path)],
+                    capture_output=True
+                )
+                if r.returncode == 0:
+                    print(f"  Сертификат для {domain} уже существует и действителен.")
+                    return True
+            except Exception:
+                pass
+
         from hydra.utils.firewall import is_ufw_active
 
         if not shutil.which("apt-get") and not shutil.which("certbot"):
@@ -553,6 +567,7 @@ class NaivePlugin(BasePlugin):
             "-d", domain,
             "--non-interactive", "--agree-tos",
             "--register-unsafely-without-email",
+            "--keep-until-expiring",
         ], capture_output=True, text=True)
 
         success = r.returncode == 0

@@ -50,7 +50,8 @@ def test_configure_returns_fragment_even_without_users():
     assert frag.nft_tproxy_ports == []
 
 
-def test_configure_skips_blocked_users():
+@patch.object(NaivePlugin, "_resolve_certs", return_value=("/path/to/cert.pem", "/path/to/key.pem"))
+def test_configure_skips_blocked_users(mock_resolve):
     """Заблокированные юзеры не попадают в Caddyfile."""
     p = NaivePlugin()
     state = _make_state([

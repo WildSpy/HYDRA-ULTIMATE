@@ -52,13 +52,15 @@ def apply_config(state: AppState) -> bool:
             time.sleep(0.3)
         rebuild_mux(state)
 
-    # Если caddy-naive включен как отдельный сервис, он мог упасть из-за конфликта портов
-    naive_proto = state.protocols.get("naive")
-    if naive_proto and naive_proto.enabled:
-        r = subprocess.run(["systemctl", "cat", "caddy-naive"], capture_output=True)
-        if r.returncode == 0:
-            subprocess.run(["systemctl", "reset-failed", "caddy-naive"], capture_output=True)
-            subprocess.run(["systemctl", "restart", "caddy-naive"], capture_output=True)
+    try:
+        naive_proto = state.protocols.get("naive")
+        if naive_proto and naive_proto.enabled:
+            r = subprocess.run(["systemctl", "cat", "caddy-naive"], capture_output=True)
+            if r.returncode == 0:
+                subprocess.run(["systemctl", "reset-failed", "caddy-naive"], capture_output=True)
+                subprocess.run(["systemctl", "restart", "caddy-naive"], capture_output=True)
+    except Exception:
+        pass
 
     # Управляем traffic daemon
     try:
@@ -183,6 +185,8 @@ def enable(state: AppState, name: str) -> bool:
         state.security.fail2ban_enabled = True
     elif name == "honeypot":
         state.security.honeypot_enabled = True
+    elif name == "ipban":
+        state.security.ipban_enabled = True
     save_state(state)
 
     # Генерируем конфиги для всех существующих пользователей
@@ -207,6 +211,8 @@ def disable(state: AppState, name: str) -> bool:
         state.security.fail2ban_enabled = False
     elif name == "honeypot":
         state.security.honeypot_enabled = False
+    elif name == "ipban":
+        state.security.ipban_enabled = False
     save_state(state)
     return apply_config(state)
 

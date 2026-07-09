@@ -311,7 +311,8 @@ def prompt(text: str, default: str = "") -> str:
     """Запрашивает ввод у пользователя."""
     d = f" {DIM}[{default}]{NC}" if default else ""
     try:
-        result = input(f"{INDENT}{CYAN}▸{NC} {BOLD}{text}{NC}{d}{CYAN} ›{NC} ").strip()
+        print(f"{INDENT}{CYAN}▸{NC} {BOLD}{text}{NC}{d}")
+        result = input(f"{INDENT}  {CYAN}›{NC} ").strip()
         return result or default
     except (KeyboardInterrupt, EOFError):
         return default

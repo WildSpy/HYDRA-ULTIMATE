@@ -988,6 +988,22 @@ def _obtain_cert_for_sub(state: AppState) -> bool:
     if not sub_domain:
         error("Сначала настройте домен подписок.")
         return False
+
+    # Проверяем, есть ли уже валидный сертификат
+    from pathlib import Path
+    cert_path = Path(f"/etc/letsencrypt/live/{sub_domain}/fullchain.pem")
+    key_path = Path(f"/etc/letsencrypt/live/{sub_domain}/privkey.pem")
+    if cert_path.exists() and key_path.exists():
+        try:
+            r = subprocess.run(
+                ["openssl", "x509", "-checkend", "2592000", "-noout", "-in", str(cert_path)],
+                capture_output=True
+            )
+            if r.returncode == 0:
+                success(f"Сертификат для {sub_domain} уже существует и действителен.")
+                return True
+        except Exception:
+            pass
         
     info(f"Получение SSL-сертификата для {sub_domain} через certbot...")
     import shutil
@@ -1011,7 +1027,8 @@ def _obtain_cert_for_sub(state: AppState) -> bool:
         "certbot", "certonly", "--standalone",
         "-d", sub_domain,
         "--non-interactive", "--agree-tos",
-        "--register-unsafely-without-email"
+        "--register-unsafely-without-email",
+        "--keep-until-expiring",
     ], capture_output=True, text=True)
     
     for s in reversed(was_running):
@@ -2212,13 +2229,26 @@ def menu_security(state: AppState):
         if choice == "0":
             return
         elif choice == "A":
+            errors = []
             for p in plugins_list:
-                _toggle_security_plugin(state, p.meta.name, force_enable=True)
-            success("Все службы безопасности включены")
+                try:
+                    _toggle_security_plugin(state, p.meta.name, force_enable=True)
+                except Exception as e:
+                    errors.append(f"{p.meta.name}: {e}")
+            if errors:
+                from hydra.ui.tui import warn
+                for err in errors:
+                    warn(err)
+                success("Часть служб безопасности включена (см. ошибки выше)")
+            else:
+                success("Все службы безопасности включены")
             prompt("Нажмите Enter")
         elif choice == "B":
             for p in plugins_list:
-                _toggle_security_plugin(state, p.meta.name, force_enable=False)
+                try:
+                    _toggle_security_plugin(state, p.meta.name, force_enable=False)
+                except Exception:
+                    pass
             success("Все службы безопасности выключены")
             prompt("Нажмите Enter")
         else:
@@ -2266,6 +2296,8 @@ def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | Non
         state.security.fail2ban_enabled = enabled_val
     elif name == "honeypot":
         state.security.honeypot_enabled = enabled_val
+    elif name == "ipban":
+        state.security.ipban_enabled = enabled_val
         
     save_state(state)
     orchestrator.apply_config(state)

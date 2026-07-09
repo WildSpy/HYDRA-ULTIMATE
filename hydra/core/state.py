@@ -82,6 +82,7 @@ class SecurityConfig:
     """Настройки безопасности."""
     fail2ban_enabled: bool = False
     honeypot_enabled: bool = False
+    ipban_enabled: bool = False
 
 
 @dataclass

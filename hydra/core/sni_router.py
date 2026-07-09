@@ -264,10 +264,16 @@ def _ensure_modern_go() -> bool:
     return False
 
 
-def install() -> bool:
-    """Builds and installs caddy-l4 with forwardproxy using xcaddy."""
+def install(state: AppState | None = None) -> bool:
+    """Builds and installs caddy-l4 with optional forwardproxy using xcaddy."""
     if is_installed():
         return True
+
+    # Определяем, нужен ли forwardproxy-naive модуль
+    need_naive_fp = False
+    if state:
+        naive_proto = state.protocols.get("naive")
+        need_naive_fp = naive_proto and naive_proto.enabled
 
     print("  Installing Go compiler...")
     if not _ensure_modern_go():
@@ -313,20 +319,34 @@ def install() -> bool:
     if not os.path.exists(xcaddy_bin):
         xcaddy_bin = shutil.which("xcaddy") or "xcaddy"
 
-    # Build Caddy with layer4 and forwardproxy-naive plugins
-    r = subprocess.run([
-        xcaddy_bin, "build",
-        "--with", "github.com/mholt/caddy-l4",
-        "--with", "github.com/caddyserver/forwardproxy@caddy2=github.com/Michaol/forwardproxy-naive@caddy2",
-        "--output", str(CADDY_BIN)
-    ], capture_output=True, text=True, env=env)
+    # Build Caddy с УСЛОВНЫМ набором модулей
+    build_args = [xcaddy_bin, "build", "--with", "github.com/mholt/caddy-l4"]
+    
+    if need_naive_fp:
+        build_args += [
+            "--with",
+            "github.com/caddyserver/forwardproxy@caddy2=github.com/Michaol/forwardproxy-naive@caddy2",
+        ]
+    
+    build_args += ["--output", str(CADDY_BIN)]
+    
+    r = subprocess.run(build_args, capture_output=True, text=True, env=env)
 
-    if r.returncode != 0:
-        # Fallback to building without the naive fork if there are dependency conflicts
-        r = subprocess.run([
+    if r.returncode != 0 and need_naive_fp:
+        # Fallback: попробовать без naive-форка
+        build_args_fallback = [
             xcaddy_bin, "build",
             "--with", "github.com/mholt/caddy-l4",
             "--with", "github.com/caddyserver/forwardproxy@caddy2",
+            "--output", str(CADDY_BIN)
+        ]
+        r = subprocess.run(build_args_fallback, capture_output=True, text=True, env=env)
+
+    if r.returncode != 0 and need_naive_fp:
+        # Fallback 2: вообще без forwardproxy
+        r = subprocess.run([
+            xcaddy_bin, "build",
+            "--with", "github.com/mholt/caddy-l4",
             "--output", str(CADDY_BIN)
         ], capture_output=True, text=True, env=env)
 
@@ -668,7 +688,7 @@ def rebuild(state: AppState) -> bool:
 
     # 1. Ensure Caddy L4 is installed
     if not is_installed():
-        if not install():
+        if not install(state=state):
             return False
 
     # 2. Ensure decoy site files exist
