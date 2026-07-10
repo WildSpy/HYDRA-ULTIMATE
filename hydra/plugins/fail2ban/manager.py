@@ -203,8 +203,24 @@ def _f2b_write_conf(jail_name: str, cp: configparser.RawConfigParser) -> bool:
 
 
 def _portscan_add_log_rule():
+    # Игнорируем loopback и приватные подсети (чтобы VPN-клиенты и локальный трафик не банились)
+    for spec in (
+        ["-i", "lo"],
+        ["-s", "10.0.0.0/8"],
+        ["-s", "172.16.0.0/12"],
+        ["-s", "192.168.0.0/16"],
+        ["-s", "127.0.0.0/8"]
+    ):
+        subprocess.run([
+            "iptables", "-A", "INPUT"
+        ] + spec + [
+            "-m", "comment", "--comment", "hydra-portscan-ignore", "-j", "RETURN"
+        ], capture_output=True)
+
+    # Добавляем правило логирования в самый конец цепочки INPUT
     subprocess.run([
-        "iptables", "-A", "INPUT", "!", "-i", "lo", "-p", "tcp", "--syn",
+        "iptables", "-A", "INPUT", "-p", "tcp", "--syn",
+        "-m", "comment", "--comment", "hydra-portscan-log",
         "-j", "LOG", "--log-prefix", "HYDRA-PORTSCAN ", "--log-level", "4"
     ], capture_output=True)
 
@@ -213,7 +229,7 @@ def _portscan_remove_log_rule():
     r = subprocess.run(["iptables", "-S", "INPUT"], capture_output=True, text=True)
     if r.returncode == 0:
         for line in r.stdout.splitlines():
-            if "HYDRA-PORTSCAN" in line:
+            if "hydra-portscan" in line.lower() or "HYDRA-PORTSCAN" in line:
                 parts = line.split()
                 if parts[0] == "-A":
                     parts[0] = "-D"
