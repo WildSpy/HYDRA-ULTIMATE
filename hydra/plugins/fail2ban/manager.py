@@ -180,6 +180,8 @@ def _f2b_read_conf(jail_name: str) -> configparser.RawConfigParser:
             cp.read(path, encoding="utf-8")
         except Exception:
             pass
+    if not cp.has_section(jail_name):
+        cp.add_section(jail_name)
     return cp
 
 
