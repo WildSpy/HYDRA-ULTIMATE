@@ -33,9 +33,9 @@ DEFAULT_PORT = 51820
 _KNOWN_SUBNETS = ["10.66.66.0/16", "172.17.0.0/16"]
 _PREFERRED_SUBNETS = ["10.67.67.0/24"]
 DEFAULT_OBFUSCATION = {
-    "Jc": "4", "Jmin": "40", "Jmax": "70",
-    "S1": "8", "S2": "72", "S3": "12", "S4": "20",
-    "H1": "1", "H2": "2", "H3": "3", "H4": "4",
+    "Jc": "5", "Jmin": "50", "Jmax": "150",
+    "S1": "40", "S2": "120", "S3": "0", "S4": "4",
+    "H1": "1847293", "H2": "839102847", "H3": "49182736", "H4": "129384756",
 }
 OBFUSCATION_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
                     "H1", "H2", "H3", "H4"]
@@ -568,8 +568,21 @@ class AmneziaWGPlugin(BasePlugin):
             priv_r = subprocess.run(["wg", "genkey"], capture_output=True, text=True)
         server_private_key = priv_r.stdout.strip()
         
-        from hydra.plugins.amneziawg.presets import generate_params
-        obf_1 = generate_params(preset)
+        from hydra.plugins.amneziawg.presets import generate_params, LEGACY_PRESET_MAP, STRATEGIES
+        strategy = "mobile"
+        carrier = None
+        if ":" in preset:
+            strategy, carrier = preset.split(":", 1)
+            if carrier == "generic":
+                carrier = None
+        else:
+            if preset in STRATEGIES:
+                strategy = preset
+            elif preset in LEGACY_PRESET_MAP:
+                strategy, carrier = LEGACY_PRESET_MAP[preset]
+            else:
+                strategy = preset
+        obf_1 = generate_params(strategy=strategy, carrier=carrier)
         
         base = network_1.rsplit(".", 1)[0]
         lines = [
@@ -690,8 +703,21 @@ class AmneziaWGPlugin(BasePlugin):
             else:
                 preset = "default"
                 
-        from hydra.plugins.amneziawg.presets import generate_params
-        new_params = generate_params(preset)
+        from hydra.plugins.amneziawg.presets import generate_params, LEGACY_PRESET_MAP, STRATEGIES
+        strategy = "wired"
+        carrier = None
+        if ":" in preset:
+            strategy, carrier = preset.split(":", 1)
+            if carrier == "generic":
+                carrier = None
+        else:
+            if preset in STRATEGIES:
+                strategy = preset
+            elif preset in LEGACY_PRESET_MAP:
+                strategy, carrier = LEGACY_PRESET_MAP[preset]
+            else:
+                strategy = preset
+        new_params = generate_params(strategy=strategy, carrier=carrier)
         
         text = conf_path.read_text(encoding="utf-8")
         

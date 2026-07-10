@@ -182,3 +182,77 @@ def test_resolve_network_avoids_conflicts():
         state.protocols["amneziawg"].config = {}
         net = p._resolve_network(state)
         assert net == "10.67.67.0/24"
+
+
+def test_presets_strategies_and_overrides():
+    from hydra.plugins.amneziawg.presets import (
+        generate_params, validate_params, STRATEGIES, CARRIER_OVERRIDES, LEGACY_PRESET_MAP, list_presets, list_strategies, list_carriers
+    )
+    
+    # 1. Test list functions
+    assert len(list_presets()) > 0
+    assert len(list_strategies()) == 4
+    assert len(list_carriers("mobile")) > 1
+
+    # 2. Test generating all strategies
+    for strategy in STRATEGIES.keys():
+        params = generate_params(strategy=strategy)
+        assert params["Jc"].isdigit()
+        assert params["Jmin"].isdigit()
+        assert params["Jmax"].isdigit()
+        assert params["S1"].isdigit()
+        assert params["S2"].isdigit()
+        assert params["S3"].isdigit()
+        assert params["S4"].isdigit()
+        assert params["H1"].isdigit()
+        assert params["H2"].isdigit()
+        assert params["H3"].isdigit()
+        assert params["H4"].isdigit()
+        
+        # Verify validate_params accepts it
+        ok, err = validate_params(params)
+        assert ok, f"Validation failed for strategy {strategy}: {err}"
+
+    # 3. Test carrier overrides
+    for carrier in CARRIER_OVERRIDES.keys():
+        params = generate_params(strategy="mobile", carrier=carrier)
+        ok, err = validate_params(params)
+        assert ok, f"Validation failed for carrier {carrier}: {err}"
+        
+        # Specific carrier checks
+        if carrier == "tele2":
+            assert params["Jc"] == "3"
+        elif carrier == "megafon":
+            assert params["I1"] == ""
+        elif carrier == "yota":
+            assert int(params["Jmax"]) <= 300
+
+    # 4. Test fingerprint constraint S1 + 56 != S2
+    for _ in range(50):
+        params = generate_params(strategy="stealth")
+        s1 = int(params["S1"])
+        s2 = int(params["S2"])
+        assert s1 + 56 != s2, f"Fingerprint constraint violated: S1={s1}, S2={s2}"
+
+    # 5. Test uniqueness of H1-H4 and non-default values
+    params = generate_params(strategy="wired")
+    h1 = int(params["H1"])
+    h2 = int(params["H2"])
+    h3 = int(params["H3"])
+    h4 = int(params["H4"])
+    assert len({h1, h2, h3, h4}) == 4
+    assert not {h1, h2, h3, h4}.intersection({1, 2, 3, 4})
+
+    # 6. Test seed reproducibility
+    p1 = generate_params(strategy="wired", carrier="tele2", seed=42)
+    p2 = generate_params(strategy="wired", carrier="tele2", seed=42)
+    p3 = generate_params(strategy="wired", carrier="tele2", seed=43)
+    assert p1 == p2
+    assert p1 != p3
+
+    # 7. Test legacy mappings
+    for legacy, (strat, carr) in LEGACY_PRESET_MAP.items():
+        p_legacy = generate_params(strategy=legacy, seed=123)
+        p_new = generate_params(strategy=strat, carrier=carr, seed=123)
+        assert p_legacy == p_new
+

@@ -2357,6 +2357,7 @@ def _menu_amneziawg(state: AppState, p):
                 options.append(("3", "👤 Профили AWG", "Управление профилями (Desktop/Mobile)"))
                 options.append(("4", "🔄 Ротация обфускации", "Ротировать параметры обфускации без downtime"))
                 options.append(("5", "⚙️ Оптимизация VPS", "Hardware-aware sysctl/swap/NIC автотюнинг"))
+                options.append(("6", "🎲 Генератор обфускации", "Пошаговый мастер генерации обфускации"))
             else:
                 options.append(("1", "▶️  Включить", "Активировать протокол"))
             
@@ -2412,6 +2413,9 @@ def _menu_amneziawg(state: AppState, p):
         elif choice == "5" and ps.installed and ps.enabled:
             _tune_awg_hardware(state, p)
             
+        elif choice == "6" and ps.installed and ps.enabled:
+            _awg_generate_wizard_menu(state, p)
+            
         elif choice == "8" and ps.installed:
             if confirm("Переустановить?", default=False):
                 orchestrator.uninstall_plugin(state, p.meta.name)
@@ -2458,20 +2462,11 @@ def _manage_awg_profiles(state: AppState, p):
             break
             
         elif choice == "1" and not has_mobile:
-            from hydra.plugins.amneziawg.presets import list_presets
-            presets = list_presets()
-            preset_options = []
-            for idx, pr in enumerate(presets, 1):
-                preset_options.append((str(idx), pr["label"], pr["description"]))
-            preset_options.append(("0", "Отмена", ""))
-            
-            p_choice = menu(preset_options, "ВЫБЕРИТЕ ПРЕСЕТ ДЛЯ МОБИЛЬНОГО ПРОФИЛЯ")
-            if p_choice == "0" or not p_choice.isdigit():
-                continue
-            
-            p_idx = int(p_choice) - 1
-            if 0 <= p_idx < len(presets):
-                preset_name = presets[p_idx]["name"]
+            res = _awg_generate_wizard(state, p)
+            if res:
+                strategy, carrier = res
+                carrier_str = carrier if carrier else "generic"
+                preset_name = f"{strategy}:{carrier_str}"
                 info(f"Создание профиля с пресетом {preset_name}...")
                 if p.add_profile("mobile", preset_name, state):
                     success("Мобильный профиль успешно создан!")
@@ -2504,20 +2499,11 @@ def _rotate_awg_obfuscation(state: AppState, p):
     if 0 <= p_idx < len(profiles):
         prof = profiles[p_idx]
         
-        from hydra.plugins.amneziawg.presets import list_presets
-        presets = list_presets()
-        preset_options = []
-        for idx, pr in enumerate(presets, 1):
-            preset_options.append((str(idx), pr["label"], pr["description"]))
-        preset_options.append(("0", "Отмена", ""))
-        
-        p_choice = menu(preset_options, f"ВЫБЕРИТЕ ПРЕСЕТ ДЛЯ {prof['label'].upper()}")
-        if p_choice == "0" or not p_choice.isdigit():
-            return
-            
-        pr_idx = int(p_choice) - 1
-        if 0 <= pr_idx < len(presets):
-            preset_name = presets[pr_idx]["name"]
+        res = _awg_generate_wizard(state, p)
+        if res:
+            strategy, carrier = res
+            carrier_str = carrier if carrier else "generic"
+            preset_name = f"{strategy}:{carrier_str}"
             info("Генерация новых параметров обфускации и hot-reload...")
             if p.rotate_obfuscation(state, profile=prof["name"], preset=preset_name):
                 success("Параметры успешно ротированы без downtime!")
@@ -2709,3 +2695,116 @@ def _menu_mieru_obfuscation(state: AppState, p):
                 else:
                     error("Не удалось применить пресет")
                 prompt("Нажмите Enter")
+
+
+def _awg_generate_wizard_menu(state: AppState, p):
+    profiles = p.get_profiles(state)
+    options = []
+    for idx, prof in enumerate(profiles, 1):
+        options.append((str(idx), f"Применить к {prof['label']} ({prof['interface']})", f"Текущий пресет: {prof['preset']}"))
+    options.append(("0", "Отмена", ""))
+    
+    choice = menu(options, "ВЫБЕРИТЕ ПРОФИЛЬ ДЛЯ ГЕНЕРАЦИИ")
+    if choice == "0" or not choice.isdigit():
+        return
+        
+    p_idx = int(choice) - 1
+    if 0 <= p_idx < len(profiles):
+        prof = profiles[p_idx]
+        res = _awg_generate_wizard(state, p)
+        if res:
+            strategy, carrier = res
+            carrier_str = carrier if carrier else "generic"
+            preset_name = f"{strategy}:{carrier_str}"
+            info("Генерация новых параметров обфускации и hot-reload...")
+            if p.rotate_obfuscation(state, profile=prof["name"], preset=preset_name):
+                success("Параметры успешно применены!")
+                info("Клиенты автоматически получат новые настройки при обновлении подписки.")
+            else:
+                error("Ошибка применения параметров.")
+            prompt("Нажмите Enter")
+
+
+def _awg_generate_wizard(state: AppState, p) -> tuple[str, str | None] | None:
+    from hydra.plugins.amneziawg.presets import list_strategies, list_carriers, generate_params, STRATEGIES, CARRIER_OVERRIDES
+
+    # Step 1: Select Strategy
+    strategies = list_strategies()
+    strat_opts = []
+    for idx, s in enumerate(strategies, 1):
+        strat_opts.append((str(idx), s["label"], s["description"]))
+    strat_opts.append(("0", "Отмена", ""))
+    
+    choice = menu(strat_opts, "ШАГ 1: ВЫБЕРИТЕ СТРАТЕГИЮ (ТИП СЕТИ)")
+    if choice == "0" or not choice.isdigit():
+        return None
+        
+    s_idx = int(choice) - 1
+    if not (0 <= s_idx < len(strategies)):
+        return None
+        
+    strategy = strategies[s_idx]["name"]
+    carrier = None
+    
+    # Step 2: Select Carrier if mobile
+    if strategy == "mobile":
+        carriers = list_carriers(strategy)
+        carrier_opts = []
+        for idx, c in enumerate(carriers, 1):
+            carrier_opts.append((str(idx), c["label"], c["description"]))
+        carrier_opts.append(("0", "Отмена", ""))
+        
+        c_choice = menu(carrier_opts, "ШАГ 2: ВЫБЕРИТЕ ОПЕРАТОРА СВЯЗИ")
+        if c_choice == "0" or not c_choice.isdigit():
+            return None
+            
+        c_idx = int(c_choice) - 1
+        if not (0 <= c_idx < len(carriers)):
+            return None
+            
+        carrier = carriers[c_idx]["name"]
+        if carrier == "generic":
+            carrier = None
+
+    # Step 3: Loop for Preview & Regeneration
+    while True:
+        params = generate_params(strategy=strategy, carrier=carrier)
+        
+        strat_label = STRATEGIES[strategy].label
+        carrier_label = "Универсальный мобильный"
+        if carrier:
+            carrier_label = CARRIER_OVERRIDES[carrier].label
+        elif strategy != "mobile":
+            carrier_label = "Не требуется (проводной/stealth)"
+            
+        lines = [
+            f"  Стратегия:  {strat_label}",
+            f"  Оператор:   {carrier_label}",
+            "",
+            f"  Jc   = {params['Jc']:<6}  S1 = {params['S1']:<6}  H1 = {params['H1']}",
+            f"  Jmin = {params['Jmin']:<6}  S2 = {params['S2']:<6}  H2 = {params['H2']}",
+            f"  Jmax = {params['Jmax']:<6}  S3 = {params['S3']:<6}  H3 = {params['H3']}",
+            f"                  S4 = {params['S4']:<6}  H4 = {params['H4']}",
+            "",
+            f"  I1   = {params['I1'] if params['I1'] else 'Отсутствует'}",
+            "",
+            f"  {GREEN}ⓘ{NC}  S1({params['S1']}) + 56 = {int(params['S1'])+56} != S2({params['S2']}) — сигнатура WireGuard устранена",
+            f"  {GREEN}ⓘ{NC}  Заголовки H1-H4 полностью уникальны и рандомизированы",
+        ]
+        
+        clear()
+        panel("🎲 СГЕНЕРИРОВАННЫЕ ПАРАМЕТРЫ ОБФУСКАЦИИ", lines)
+        
+        confirm_opts = [
+            ("1", "✅ Применить эти параметры", "Сохранить и перезапустить туннель с ними"),
+            ("2", "🔄 Перегенерировать", "Сгенерировать другие случайные значения"),
+            ("0", "❌ Отмена", "Выйти без сохранения"),
+        ]
+        
+        ans = menu(confirm_opts, "ПОДТВЕРЖДЕНИЕ ГЕНЕРАЦИИ")
+        if ans == "1":
+            return strategy, carrier
+        elif ans == "2":
+            continue
+        else:
+            return None
