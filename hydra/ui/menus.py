@@ -338,6 +338,7 @@ def _user_links(state: AppState, user: User):
             for prof in profiles:
                 conf = ""
                 link = ""
+                vpn_link = ""
                 try:
                     conf = p.generate_client_config(user, state, profile=prof) or ""
                 except Exception:
@@ -346,12 +347,26 @@ def _user_links(state: AppState, user: User):
                     link = p.client_link(user, state, profile=prof) or ""
                 except Exception:
                     pass
-                if not conf and not link:
+                try:
+                    vpn_link = p.amnezia_link(user, state, profile=prof) or ""
+                except Exception:
+                    pass
+                if not conf and not link and not vpn_link:
                     continue
                 label_ru = "ПК / Desktop" if prof == "desktop" else "Смартфон / Mobile"
                 print(f"  {CYAN}── {BOLD}{p.meta.name.upper()} ({label_ru}){NC}{CYAN}{'─' * (PANEL_W - 14 - len(p.meta.name) - len(label_ru))}{NC}")
                 if link:
-                    print(f"  {GREEN}Ссылка:{NC}  {link}")
+                    print(f"  {GREEN}Ссылка (WireGuard):{NC}  {link}")
+                if vpn_link:
+                    print(f"  {GREEN}Ссылка (AmneziaVPN):{NC} {vpn_link}")
+                    try:
+                        import qrcode
+                        qr = qrcode.QRCode()
+                        qr.add_data(vpn_link)
+                        qr.print_ascii()
+                    except ImportError:
+                        pass
+                elif link:
                     try:
                         import qrcode
                         qr = qrcode.QRCode()
@@ -1292,8 +1307,13 @@ def _user_configs(state: AppState, user: User):
 
                 for prof in profiles:
                     link_prof = ""
+                    vpn_link = ""
                     try:
                         link_prof = p.client_link(user, state, profile=prof)
+                    except Exception:
+                        pass
+                    try:
+                        vpn_link = p.amnezia_link(user, state, profile=prof)
                     except Exception:
                         pass
                     
@@ -1303,11 +1323,19 @@ def _user_configs(state: AppState, user: User):
                             box_lines = []
                             label_ru = "ПК / Desktop" if prof == "desktop" else "Смартфон / Mobile"
                             
-                            # Показываем ссылку, если она есть
+                            # Показываем WireGuard/AmneziaWG ссылку
                             if link_prof:
-                                box_lines.append(f"{YELLOW}{BOLD}Ссылка для подключения (URL - {label_ru}):{NC}")
+                                box_lines.append(f"{YELLOW}{BOLD}Ссылка для подключения (WireGuard / URL - {label_ru}):{NC}")
                                 link_width = PANEL_W - 6
                                 for chunk in [link_prof[i:i+link_width] for i in range(0, len(link_prof), link_width)]:
+                                    box_lines.append(f"  {CYAN}{chunk}{NC}")
+                                box_lines.append(f"{DIM}{'─' * (PANEL_W - 4)}{NC}")
+                                
+                            # Показываем Amnezia VPN (vpn://) ссылку
+                            if vpn_link:
+                                box_lines.append(f"{YELLOW}{BOLD}Ссылка для импорта в Amnezia VPN (vpn:// - {label_ru}):{NC}")
+                                link_width = PANEL_W - 6
+                                for chunk in [vpn_link[i:i+link_width] for i in range(0, len(vpn_link), link_width)]:
                                     box_lines.append(f"  {CYAN}{chunk}{NC}")
                                 box_lines.append(f"{DIM}{'─' * (PANEL_W - 4)}{NC}")
                             
@@ -1322,9 +1350,9 @@ def _user_configs(state: AppState, user: User):
                             try:
                                 import qrcode
                                 qr = qrcode.QRCode(border=1)
-                                target = link_prof if link_prof else conf
+                                target = vpn_link if vpn_link else (link_prof if link_prof else conf)
                                 qr.add_data(target)
-                                print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для быстрого импорта ({label_ru}):{NC}")
+                                print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для импорта в Amnezia VPN ({label_ru}):{NC}")
                                 qr.print_ascii(invert=True)
                             except ImportError:
                                 pass

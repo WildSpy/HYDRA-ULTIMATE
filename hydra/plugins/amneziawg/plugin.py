@@ -894,6 +894,102 @@ class AmneziaWGPlugin(BasePlugin):
         label = "AWG Mobile" if profile_name == "mobile" else "AWG Desktop"
         return f"wg://{host}:{port}?{'&'.join(params)}#{user.email}%20{label}"
 
+    def amnezia_link(self, user: User, state: AppState, profile: str = None) -> str:
+        """Ссылка vpn:// для официального клиента AmneziaVPN (импорт одним тапом)."""
+        import json
+        import zlib
+        
+        profile_name = profile if profile else "desktop"
+        conf = self.generate_client_config(user, state, profile=profile_name)
+        if not conf:
+            return ""
+
+        if profile_name == "mobile":
+            conf_path = AWG_CONF_1
+        else:
+            conf_path = AWG_CONF
+
+        if not conf_path.exists():
+            return ""
+
+        keys = self._get_or_create_keys(user, state, profile=profile_name)
+        pub = keys["public_key"]
+        ip = self._existing_peer_ips_for_conf(conf_path).get(pub)
+        if not ip:
+            return ""
+
+        base, _, _ = self._network_for_profile(
+            state, conf_path, profile_name,
+            "10.67.67.0/24" if profile_name == "desktop" else "10.68.68.0/24"
+        )
+        server_pub = self._server_pubkey_for_conf(conf_path)
+
+        if profile_name == "mobile":
+            port = DEFAULT_PORT_1
+            ps = state.protocols.get("amneziawg")
+            if ps and "profiles" in ps.config and "mobile" in ps.config["profiles"]:
+                port = ps.config["profiles"]["mobile"].get("port", DEFAULT_PORT_1)
+        else:
+            port = self._current_port()
+
+        endpoint = state.network.server_ip or self._params().get("SERVER_PUB_IP") or self._public_ip()
+        obf = self._obfuscation_for_conf(conf_path)
+
+        mtu_m = re.search(r"^MTU\s*=\s*(\d+)", self._interface_block_for_conf(conf_path, base, "1"), re.M)
+        mtu = mtu_m.group(1) if (mtu_m and mtu_m.group(1) != "1420") else "1376"
+
+        inner = {
+            "H1": str(obf.get("H1", "1")),
+            "H2": str(obf.get("H2", "2")),
+            "H3": str(obf.get("H3", "3")),
+            "H4": str(obf.get("H4", "4")),
+            "Jc": str(obf.get("Jc", "4")),
+            "Jmin": str(obf.get("Jmin", "40")),
+            "Jmax": str(obf.get("Jmax", "70")),
+            "S1": str(obf.get("S1", "0")),
+            "S2": str(obf.get("S2", "0")),
+            "S3": str(obf.get("S3", "0")),
+            "S4": str(obf.get("S4", "0")),
+        }
+        for k in ("I1", "I2", "I3", "I4", "I5"):
+            v = obf.get(k, "")
+            if v:
+                inner[k] = str(v)
+
+        inner["allowed_ips"] = ["0.0.0.0/0"]
+        inner["client_ip"] = f"{base}.{ip}"
+        inner["client_ipv6"] = ""
+        inner["client_priv_key"] = keys["private_key"]
+        if keys.get("preshared_key"):
+            inner["psk_key"] = keys["preshared_key"]
+        inner["config"] = conf
+        inner["hostName"] = endpoint
+        inner["mtu"] = str(mtu)
+        inner["persistent_keep_alive"] = "25"
+        inner["port"] = port
+        inner["server_pub_key"] = server_pub
+
+        inner_json = json.dumps(inner, ensure_ascii=False)
+        inner_b64 = base64.b64encode(inner_json.encode("utf-8")).decode("ascii")
+
+        outer = {
+            "containers": [{
+                "awg": {
+                    "isThirdPartyConfig": True,
+                    "last_config": inner_json,
+                    "port": str(port),
+                    "protocol_version": "2",
+                    "transport_proto": "udp",
+                },
+                "container": "amnezia-awg",
+            }],
+            "defaultContainer": "amnezia-awg",
+        }
+        outer_json = json.dumps(outer, ensure_ascii=False)
+        outer_b64 = base64.b64encode(outer_json.encode("utf-8")).decode("ascii")
+
+        return f"vpn://free/{outer_b64}/{inner_b64}"
+
     # ═════════════════════════════════════════════════════════════════════
     #  Статус / трафик
     # ═════════════════════════════════════════════════════════════════════
