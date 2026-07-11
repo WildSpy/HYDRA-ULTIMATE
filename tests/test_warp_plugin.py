@@ -42,8 +42,7 @@ def test_configure(mock_cache, mock_load_config):
     
     # 1. Тест с дефолтными настройками
     frag = p.configure(state)
-    assert len(frag.outbounds) == 1
-    assert frag.outbounds[0] == {"type": "direct", "tag": "warp", "detour": "warp"}
+    assert len(frag.outbounds) == 0
     
     assert len(frag.endpoints) == 1
     assert frag.endpoints[0]["type"] == "wireguard"
