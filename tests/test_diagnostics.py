@@ -97,7 +97,25 @@ class TestDiagnosticsGeoIPAndServices:
         
         res = diagnostics.check_custom_service("ChatGPT", 4, system_has_ipv6=False)
         assert res == "DE"
+    @patch("urllib.request.urlopen")
+    def test_check_custom_service_steam(self, mock_urlopen):
+        """Проверка детекции региона в Steam."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'itemprop="priceCurrency" content="USD"'
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        
+        res = diagnostics.check_custom_service("Steam", 4, system_has_ipv6=False)
+        assert res == "USD"
 
+    @patch("urllib.request.urlopen")
+    def test_check_custom_service_claude(self, mock_urlopen):
+        """Проверка детекции Claude."""
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_urlopen.return_value.__enter__.return_value = mock_resp
+        
+        res = diagnostics.check_custom_service("Claude", 4, system_has_ipv6=False)
+        assert res == "Yes"
 
 class TestDiagnosticsCensorcheck:
     @patch("urllib.request.urlopen")

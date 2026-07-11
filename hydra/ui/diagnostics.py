@@ -435,6 +435,25 @@ def check_custom_service(service_name: str, ip_version: int, system_has_ipv6: bo
     if ip_version == 6 and not system_has_ipv6:
         return "—"
         
+    def find_key_nested(d, target_key):
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k == target_key:
+                    return v
+                res = find_key_nested(v, target_key)
+                if res is not None:
+                    return res
+        elif isinstance(d, list):
+            for item in d:
+                res = find_key_nested(item, target_key)
+                if res is not None:
+                    return res
+        return None
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+        
     try:
         if service_name == "Google":
             response = make_http_request("https://accounts.google.com/v3/signin/identifier?flowName=GlifSetupAndroid")
@@ -466,6 +485,83 @@ def check_custom_service(service_name: str, ip_version: int, system_has_ipv6: bo
             response = make_http_request("https://spclient.wg.spotify.com/signup/public/v1/account/?validate=1&key=142b583129b2df829de3656f9eb484e6", headers=headers)
             data = json.loads(response)
             return data.get("country", "").upper()
+        elif service_name == "Disney+":
+            # 1. Register Device
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Content-Type": "application/json",
+                "Authorization": "Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84"
+            }
+            url1 = "https://disney.api.edge.bamgrid.com/devices"
+            body1 = json.dumps({
+                "deviceFamily": "browser",
+                "applicationRuntime": "chrome",
+                "deviceProfile": "windows",
+                "attributes": {}
+            }).encode()
+            
+            req1 = urllib.request.Request(url1, headers=headers, data=body1, method="POST")
+            with urllib.request.urlopen(req1, context=ctx, timeout=3.0) as resp1:
+                res1 = json.loads(resp1.read().decode("utf-8"))
+                assertion = res1.get("assertion")
+                if not assertion:
+                    return "No"
+                    
+            # 2. Get Token (Exchange)
+            url2 = "https://disney.api.edge.bamgrid.com/token"
+            headers2 = headers.copy()
+            headers2["Content-Type"] = "application/x-www-form-urlencoded"
+            body2 = f"grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange&latitude=0&longitude=0&platform=browser&subject_token={assertion}&subject_token_type=urn%3Abamtech%3Aparams%3Aoauth%3Atoken-type%3Adevice".encode()
+            
+            req2 = urllib.request.Request(url2, headers=headers2, data=body2, method="POST")
+            with urllib.request.urlopen(req2, context=ctx, timeout=3.0) as resp2:
+                res2 = json.loads(resp2.read().decode("utf-8"))
+                refresh_token = res2.get("refresh_token")
+                access_token = res2.get("access_token")
+                if not refresh_token or not access_token:
+                    return "No"
+                
+            # 3. GraphQL Query
+            url3 = "https://disney.api.edge.bamgrid.com/graph/v1/device/graphql"
+            headers3 = headers.copy()
+            headers3["Content-Type"] = "application/json"
+            headers3["Authorization"] = f"Bearer {access_token}"
+            body3 = json.dumps({
+                "query": """mutation refreshToken($input: RefreshTokenInput!) {
+                    refreshToken(refreshToken: $input) {
+                        activeSession {
+                            sessionId
+                        }
+                    }
+                }""",
+                "variables": {"input": {"refreshToken": refresh_token}}
+            }).encode()
+            
+            req3 = urllib.request.Request(url3, headers=headers3, data=body3, method="POST")
+            with urllib.request.urlopen(req3, context=ctx, timeout=3.0) as resp3:
+                res3 = json.loads(resp3.read().decode("utf-8"))
+                region = find_key_nested(res3, "countryCode")
+                if region:
+                    return region.upper()
+                return "Yes"
+        elif service_name == "Steam":
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            req = urllib.request.Request("https://store.steampowered.com/app/761830", headers=headers)
+            with urllib.request.urlopen(req, context=ctx, timeout=3.0) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+                match = re.search(r'itemprop="priceCurrency"\s+content="([^"]*)"', html)
+                if not match:
+                    match = re.search(r'"priceCurrency"\s*:\s*"([^"]*)"', html)
+                if match:
+                    return match.group(1).upper()
+                return "Yes"
+        elif service_name == "Claude":
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            req = urllib.request.Request("https://claude.ai/login", headers=headers)
+            with urllib.request.urlopen(req, context=ctx, timeout=3.0) as resp:
+                if resp.status == 200:
+                    return "Yes"
+                return "No"
     except Exception:
         pass
     finally:
@@ -599,7 +695,7 @@ def test_ip_region():
                 pass
         
         primary_services = ["MAXMIND", "IPINFO_IO", "CLOUDFLARE", "IPREGISTRY", "IPAPI_CO", "IPAPI_COM", "IPWHO_IS", "IP2LOCATION_IO"]
-        custom_services = ["Google", "YouTube", "Twitch", "ChatGPT", "Netflix", "Spotify"]
+        custom_services = ["Google", "YouTube", "Twitch", "ChatGPT", "Netflix", "Spotify", "Disney+", "Steam", "Claude"]
         
         primary_results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -1208,7 +1304,7 @@ def run_diagnostics_report() -> str:
     
     system_has_ipv6 = check_system_ipv6()
     primary_services = ["MAXMIND", "IPINFO_IO", "CLOUDFLARE", "IPREGISTRY", "IPAPI_CO", "IPAPI_COM", "IPWHO_IS", "IP2LOCATION_IO"]
-    custom_services = ["Google", "YouTube", "Twitch", "ChatGPT", "Netflix", "Spotify"]
+    custom_services = ["Google", "YouTube", "Twitch", "ChatGPT", "Netflix", "Spotify", "Disney+", "Steam", "Claude"]
     
     report.append("### Детекция баз GeoIP")
     report.append("| База | Страна (IPv4) | Страна (IPv6) |")
