@@ -44,6 +44,7 @@ class Fail2banPlugin(BasePlugin):
         subprocess.run(["apt-get", "remove", "-y", "-qq", "fail2ban"], capture_output=True, timeout=120)
         if JAIL_DIR.exists():
             (JAIL_DIR / "sshd.local").unlink(missing_ok=True)
+            (JAIL_DIR / "00-hydra-defaults.local").unlink(missing_ok=True)
             for f in JAIL_DIR.glob("hydra-*.local"):
                 f.unlink(missing_ok=True)
         filter_dir = Path("/etc/fail2ban/filter.d")
@@ -75,6 +76,22 @@ class Fail2banPlugin(BasePlugin):
         try:
             path_disable = JAIL_DIR / "sshd.local"
             path_disable.write_text("[sshd]\nenabled = false\n", encoding="utf-8")
+        except Exception:
+            pass
+
+        # Записываем дефолтный ignoreip (whitelist)
+        whitelist = ["127.0.0.1/8", "::1"]
+        if state:
+            from hydra.core.state import get_protocol
+            p_state = get_protocol(state, "fail2ban")
+            custom_wl = p_state.config.get("whitelist", [])
+            for ip in custom_wl:
+                if ip not in whitelist:
+                    whitelist.append(ip)
+        
+        try:
+            defaults_path = JAIL_DIR / "00-hydra-defaults.local"
+            defaults_path.write_text(f"[DEFAULT]\nignoreip = {' '.join(whitelist)}\n", encoding="utf-8")
         except Exception:
             pass
 

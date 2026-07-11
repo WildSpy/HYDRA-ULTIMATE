@@ -78,3 +78,22 @@ def test_uninstall():
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0)
         assert p.uninstall() is True
+
+
+def test_write_jails_with_whitelist():
+    p = Fail2banPlugin()
+    state = _make_state()
+    state.protocols["fail2ban"].config["whitelist"] = ["192.168.1.100", "10.0.0.0/24"]
+    
+    written_files = {}
+    def mock_write_text(self, text, encoding="utf-8"):
+        written_files[self.name] = text
+
+    with patch("pathlib.Path.mkdir"), \
+         patch("pathlib.Path.write_text", new=mock_write_text), \
+         patch("pathlib.Path.unlink"):
+        p._write_jails(state)
+        
+    assert "00-hydra-defaults.local" in written_files
+    content = written_files["00-hydra-defaults.local"]
+    assert "ignoreip = 127.0.0.1/8 ::1 192.168.1.100 10.0.0.0/24" in content

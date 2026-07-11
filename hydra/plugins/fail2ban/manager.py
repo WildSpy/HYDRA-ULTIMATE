@@ -382,6 +382,9 @@ def menu_fail2ban(state: AppState, plugin) -> None:
         if not installed:
             options.append(("1", "📥 Установить и настроить Fail2ban", "Установить пакет и создать базовые джейлы"))
         else:
+            from hydra.core.state import get_protocol
+            p_state = get_protocol(state, "fail2ban")
+            wl = p_state.config.get("whitelist", [])
             options.append(("1", f"{'⏸️  Остановить' if active else '▶️  Запустить'} Fail2ban", "Переключить статус службы"))
             options.append(("2", "🔁 Перезапустить / применить конфигурацию", "Выполнить reload / restart"))
             options.append(("3", f"🚫 Забаненные IP ({total_banned} шт.)", "Просмотр заблокированных IP по джейлам и разбан"))
@@ -391,6 +394,7 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             options.append(("7", "📋 Лог Fail2ban (последние 30 строк)", "Просмотр лог-файла в реальном времени"))
             options.append(("8", "🛠️  Восстановить базовую конфигурацию", "Сбросить локальные изменения джейлов"))
             options.append(("9", "📊 История банов за сутки", "Просмотр накопленной статистики"))
+            options.append(("W", f"⚪ Управление whitelist {DIM}({len(wl)} IP){NC}", "Список IP-адресов/подсетей-исключений"))
             options.append(("-", "", ""))
             options.append(("X", "🧹 Очистить лог Fail2ban", "Безопасное усечение (copytruncate) файлов лога"))
             
@@ -700,6 +704,82 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             panel(f"📊 ИСТОРИЯ БАНОВ ЗА СЕГОДНЯ ({len(hist)} шт.)", hist_lines)
             prompt("Нажмите Enter для продолжения")
             
+        # ── W. Управление whitelist ───────────────────────────────────────────
+        elif choice == "w" or choice == "W":
+            while True:
+                clear()
+                from hydra.core.state import get_protocol, save_state
+                p_state = get_protocol(state, "fail2ban")
+                wl = p_state.config.setdefault("whitelist", [])
+                
+                wl_lines = []
+                for i, ip in enumerate(wl, 1):
+                    wl_lines.append(f"  {CYAN}{i:>2}.{NC} {ip}")
+                
+                panel("Доверенные IP / подсети (Whitelist)", wl_lines if wl_lines else ["  Список пуст"])
+                
+                wl_opts = [
+                    ("1", "➕ Добавить IP/подсеть", "Внести адрес в список исключений"),
+                    ("2", "➖ Удалить IP/подсеть", "Исключить адрес из списка исключений"),
+                    ("0", "↩ Назад", "")
+                ]
+                wl_choice = menu(wl_opts, "WHITELIST FAIL2BAN")
+                
+                if wl_choice == "0":
+                    break
+                elif wl_choice == "1":
+                    new_ip = prompt("Введите IP или подсеть (например, 192.168.1.100 или 10.0.0.0/24)").strip()
+                    if new_ip:
+                        try:
+                            if "/" in new_ip:
+                                ipaddress.ip_network(new_ip, strict=False)
+                            else:
+                                ipaddress.ip_address(new_ip)
+                            
+                            if new_ip not in wl:
+                                wl.append(new_ip)
+                                p_state.config["whitelist"] = wl
+                                save_state(state)
+                                
+                                info("Применяю конфигурацию whitelist...")
+                                if plugin.apply(state):
+                                    success(f"Добавлен в whitelist и применен: {new_ip}")
+                                else:
+                                    warn(f"Добавлен в whitelist: {new_ip}, но Fail2ban не смог применить конфигурацию автоматически")
+                            else:
+                                warn("Этот IP/подсеть уже есть в списке.")
+                        except ValueError:
+                            error("Некорректный формат IP-адреса или подсети!")
+                    else:
+                        warn("Ввод пуст.")
+                    prompt("Нажмите Enter для продолжения")
+                    
+                elif wl_choice == "2":
+                    if not wl:
+                        error("Список пуст, нечего удалять.")
+                        prompt("Нажмите Enter...")
+                        continue
+                        
+                    del_opts = []
+                    for i, ip in enumerate(wl, 1):
+                        del_opts.append((str(i), ip, ""))
+                    del_opts.append(("0", "Отмена", ""))
+                    
+                    del_choice = menu(del_opts, "УДАЛЕНИЕ ИЗ WHITELIST")
+                    if del_choice == "0" or not (del_choice.isdigit() and 1 <= int(del_choice) <= len(wl)):
+                        continue
+                        
+                    removed_ip = wl.pop(int(del_choice) - 1)
+                    p_state.config["whitelist"] = wl
+                    save_state(state)
+                    
+                    info("Применяю конфигурацию whitelist...")
+                    if plugin.apply(state):
+                        success(f"Удален из whitelist и применен: {removed_ip}")
+                    else:
+                        warn(f"Удален из whitelist: {removed_ip}, но Fail2ban не смог применить конфигурацию автоматически")
+                    prompt("Нажмите Enter для продолжения")
+
         # ── X. Очистить лог ───────────────────────────────────────────────────
         elif choice == "x" or choice == "X":
             warn("ОЧИСТКА ЛОГА FAIL2BAN")
