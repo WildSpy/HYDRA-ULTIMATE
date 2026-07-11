@@ -360,23 +360,10 @@ def _user_links(state: AppState, user: User):
                 if vpn_link:
                     try:
                         import qrcode
-                        try:
-                            qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
-                            qr.add_data(vpn_link)
-                            qr.make(fit=True)
-                        except Exception:
-                            qr = qrcode.QRCode()
-                            qr.add_data(link if link else conf)
+                        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
+                        qr.add_data(vpn_link)
                         qr.print_ascii()
-                    except ImportError:
-                        pass
-                elif link:
-                    try:
-                        import qrcode
-                        qr = qrcode.QRCode()
-                        qr.add_data(link)
-                        qr.print_ascii()
-                    except ImportError:
+                    except Exception:
                         pass
                 if conf:
                     print(f"  {DIM}{'─' * PANEL_W}{NC}")
@@ -401,13 +388,7 @@ def _user_links(state: AppState, user: User):
         print(f"  {CYAN}── {BOLD}{p.meta.name}{NC}{CYAN}{'─' * (PANEL_W - 10 - len(p.meta.name))}{NC}")
         if link:
             print(f"  {GREEN}Ссылка:{NC}  {link}")
-            try:
-                import qrcode
-                qr = qrcode.QRCode()
-                qr.add_data(link)
-                qr.print_ascii()
-            except ImportError:
-                pass
+            pass
         if conf:
             print(f"  {DIM}{'─' * PANEL_W}{NC}")
             for line in conf.splitlines():
@@ -1296,15 +1277,6 @@ def _user_configs(state: AppState, user: User):
                 
                 panel(f"🔧  {p.meta.name.upper()} CONFIG", box_lines)
                 
-                # QR-код (если qrcode установлен)
-                try:
-                    import qrcode
-                    qr = qrcode.QRCode(border=1)
-                    qr.add_data(link_main)
-                    print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для быстрого импорта (Основной):{NC}")
-                    qr.print_ascii(invert=True)
-                except ImportError:
-                    pass
                 continue
 
             if p.meta.name == "amneziawg":
@@ -1350,24 +1322,18 @@ def _user_configs(state: AppState, user: User):
                             panel(f"🔧  {p.meta.name.upper()} {prof.upper()} CONFIG", box_lines)
                             
                             # QR-код (если qrcode установлен)
-                            try:
-                                import qrcode
+                            if vpn_link:
                                 try:
+                                    import qrcode
                                     qr = qrcode.QRCode(
                                         error_correction=qrcode.constants.ERROR_CORRECT_L,
                                         border=1
                                     )
-                                    target = vpn_link if vpn_link else (link_prof if link_prof else conf)
-                                    qr.add_data(target)
-                                    qr.make(fit=True)
-                                except Exception:
-                                    qr = qrcode.QRCode(border=1)
-                                    target = link_prof if link_prof else conf
-                                    qr.add_data(target)
-                                print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для импорта в Amnezia VPN ({label_ru}):{NC}")
-                                qr.print_ascii(invert=True)
-                            except ImportError:
-                                pass
+                                    qr.add_data(vpn_link)
+                                    print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для импорта в Amnezia VPN ({label_ru}):{NC}")
+                                    qr.print_ascii(invert=True)
+                                except Exception as e:
+                                    error(f"  Не удалось создать QR-код для Amnezia VPN: {e}")
                     except Exception as e:
                         error(f"  Ошибка получения конфигурации {p.meta.name} ({prof}): {e}")
                 continue
@@ -1392,16 +1358,7 @@ def _user_configs(state: AppState, user: User):
                 
                 panel(f"🔧  {p.meta.name.upper()} CONFIG", box_lines)
                 
-                # QR-код (если qrcode установлен)
-                try:
-                    import qrcode
-                    qr = qrcode.QRCode(border=1)
-                    target = link if link else conf
-                    qr.add_data(target)
-                    print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для быстрого импорта:{NC}")
-                    qr.print_ascii(invert=True)
-                except ImportError:
-                    pass
+
         except Exception as e:
             error(f"  Ошибка получения конфигурации {p.meta.name}: {e}")
             
