@@ -142,6 +142,7 @@ H1 = 1
 H2 = 2
 H3 = 3
 H4 = 4
+I1 = test_i1_value
 
 [Peer]
 PublicKey = my_peer_public_key
@@ -190,6 +191,7 @@ AllowedIPs = 0.0.0.0/0
     assert endpoint["amnezia"]["h2"] == 2
     assert endpoint["amnezia"]["h3"] == 3
     assert endpoint["amnezia"]["h4"] == 4
+    assert endpoint["amnezia"]["i1"] == "test_i1_value"
     
     # Должен содержать один peer
     assert len(endpoint["peers"]) == 1

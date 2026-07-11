@@ -338,12 +338,17 @@ class WarpPlugin(BasePlugin):
 
             if is_amnezia:
                 amnezia_params = {}
-                for k in ["s1", "s2", "jc", "jmin", "jmax", "h1", "h2", "h3", "h4"]:
+                for k in ["s1", "s2", "s3", "s4", "jc", "jmin", "jmax", "h1", "h2", "h3", "h4"]:
                     if k in parsed["interface"]:
                         try:
                             amnezia_params[k] = int(parsed["interface"][k])
                         except ValueError:
                             pass
+                for k in ["i1", "i2", "i3", "i4", "i5"]:
+                    if k in parsed["interface"]:
+                        val = parsed["interface"][k].strip()
+                        if val:
+                            amnezia_params[k] = val
                 if amnezia_params:
                     endpoint["amnezia"] = amnezia_params
 
