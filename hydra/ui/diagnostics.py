@@ -598,6 +598,12 @@ def check_custom_service(service_name: str, ip_version: int, system_has_ipv6: bo
     return "No"
 
 
+GEOBLOCK_INSPECT_DOMAINS = {
+    "openai.com", "chatgpt.com", "claude.ai",
+    "copilot.microsoft.com", "netflix.com", "spotify.com",
+    "disneyplus.com", "disney.api.edge.bamgrid.com"
+}
+
 RKN_STUB_IPS = {
     "195.208.4.1", "195.208.5.1", "188.186.157.35",
     "80.93.183.168", "213.87.154.141", "92.101.255.255"
@@ -630,31 +636,33 @@ def check_domain_censor(domain: str, secure: bool = True) -> int:
     
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=3.0) as resp:
-            # Check regional block in body
-            content_type = resp.headers.get("Content-Type", "")
-            if "text/html" in content_type:
-                body = resp.read().decode("utf-8", errors="ignore").lower()
+            # Check regional block in body only for geoblocked services
+            if domain in GEOBLOCK_INSPECT_DOMAINS:
+                content_type = resp.headers.get("Content-Type", "")
+                if "text/html" in content_type:
+                    body = resp.read().decode("utf-8", errors="ignore").lower()
+                    if any(x in body for x in [
+                        "sorry, you have been blocked", "you are unable to access",
+                        "not available in your region", "restricted in your country",
+                        "access denied due to location", "blocked in your area",
+                        "forbidden-location", "not available in your country"
+                    ]):
+                        return -5  # Regional block
+            return resp.status
+    except urllib.error.HTTPError as e:
+        if domain in GEOBLOCK_INSPECT_DOMAINS:
+            # Check body of 403/451 errors for geoblock messages
+            try:
+                body = e.read().decode("utf-8", errors="ignore").lower()
                 if any(x in body for x in [
                     "sorry, you have been blocked", "you are unable to access",
                     "not available in your region", "restricted in your country",
                     "access denied due to location", "blocked in your area",
-                    "not available", "forbidden-location"
+                    "forbidden-location", "not available in your country"
                 ]):
-                    return -5  # Regional block
-            return resp.status
-    except urllib.error.HTTPError as e:
-        # Check body of 403/451 errors for geoblock messages
-        try:
-            body = e.read().decode("utf-8", errors="ignore").lower()
-            if any(x in body for x in [
-                "sorry, you have been blocked", "you are unable to access",
-                "not available in your region", "restricted in your country",
-                "access denied due to location", "blocked in your area",
-                "not available", "forbidden-location"
-            ]):
-                return -5
-        except Exception:
-            pass
+                    return -5
+            except Exception:
+                pass
         return e.code
     except urllib.error.URLError as e:
         reason = str(e.reason).lower()
@@ -1071,7 +1079,7 @@ def test_censorcheck(mode: str):
             http_status = http.get("ipv4", {}).get("status", 0)
             https_status = https.get("ipv4", {}).get("status", 0)
             
-            if https_status == 200 or (300 <= https_status < 400):
+            if https_status > 0 and https_status != 403:
                 status_str = f"{GREEN}OK{NC}"
                 block_type_str = f"{GREEN}✓TLS{NC}"
                 ok_count += 1
