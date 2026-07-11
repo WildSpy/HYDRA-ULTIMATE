@@ -283,18 +283,23 @@ def menu(options: list[tuple[str, str, str]], header: str = "") -> str:
             
         print(f"{INDENT}{CYAN}║{NC} {line_fit}{' ' * pad} {CYAN}║{NC}")
         if desc:
-            dline = f"       {DIM}{desc}{NC}"
-            
-            plain_dline = _strip(dline).strip()
-            if plain_dline and all(c in "─-" for c in plain_dline):
-                dline_fit = f"{DIM}{'─' * (inner - 2)}{NC}"
-                dline_w = inner - 2
-                dpad = 0
-            else:
-                dline_fit, dline_w = _fit_line(dline, inner - 2)
-                dpad = inner - 2 - dline_w
-                
-            print(f"{INDENT}{CYAN}║{NC} {dline_fit}{' ' * dpad} {CYAN}║{NC}")
+            import textwrap
+            desc_width = max(20, inner - 9)
+            for paragraph in desc.split("\n"):
+                wrapped_lines = textwrap.wrap(paragraph, width=desc_width) if paragraph.strip() else [""]
+                for w_line in wrapped_lines:
+                    dline = f"       {DIM}{w_line}{NC}"
+                    
+                    plain_dline = _strip(dline).strip()
+                    if plain_dline and all(c in "─-" for c in plain_dline):
+                        dline_fit = f"{DIM}{'─' * (inner - 2)}{NC}"
+                        dline_w = inner - 2
+                        dpad = 0
+                    else:
+                        dline_fit, dline_w = _fit_line(dline, inner - 2)
+                        dpad = inner - 2 - dline_w
+                        
+                    print(f"{INDENT}{CYAN}║{NC} {dline_fit}{' ' * dpad} {CYAN}║{NC}")
 
     print(f"{INDENT}{CYAN}╚{'═' * inner}╝{NC}")
     print()
