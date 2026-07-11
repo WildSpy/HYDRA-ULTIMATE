@@ -315,20 +315,23 @@ def make_http_request(url: str, method: str = "GET", headers: dict = None, body:
 def get_ip_address(version: int = 4) -> str:
     """Нативно получает внешний IP-адрес для указанной версии протокола (IPv4/IPv6)."""
     _thread_local.ip_version = version
-    urls = {
-        4: ["https://v4.ident.me", "https://ipv4.icanhazip.com", "https://api4.ipify.org"],
-        6: ["https://v6.ident.me", "https://ipv6.icanhazip.com", "https://api6.ipify.org"]
-    }
-    for url in urls[version]:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "curl/7.81.0"})
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                ip = resp.read().decode("utf-8").strip()
-                if ip and ("." in ip or ":" in ip):
-                    return ip
-        except Exception:
-            continue
-    return ""
+    try:
+        urls = {
+            4: ["https://v4.ident.me", "https://ipv4.icanhazip.com", "https://api4.ipify.org"],
+            6: ["https://v6.ident.me", "https://ipv6.icanhazip.com", "https://api6.ipify.org"]
+        }
+        for url in urls[version]:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "curl/7.81.0"})
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    ip = resp.read().decode("utf-8").strip()
+                    if ip and ("." in ip or ":" in ip):
+                        return ip
+            except Exception:
+                continue
+        return ""
+    finally:
+        _thread_local.ip_version = None
 
 
 def query_primary_geoip(ip: str, service: str) -> str:
@@ -436,6 +439,8 @@ def check_custom_service(service_name: str, ip_version: int, system_has_ipv6: bo
             return data.get("country", "").upper()
     except Exception:
         pass
+    finally:
+        _thread_local.ip_version = None
     return "No"
 
 
@@ -564,11 +569,11 @@ def test_ip_region():
             except Exception:
                 pass
         
-        primary_services = ["IPINFO_IO", "CLOUDFLARE", "IPAPI_CO", "IPAPI_COM", "IPWHO_IS"]
+        primary_services = ["MAXMIND", "IPINFO_IO", "CLOUDFLARE", "IPREGISTRY", "IPAPI_CO", "IPAPI_COM", "IPWHO_IS", "IP2LOCATION_IO"]
         custom_services = ["Google", "YouTube", "Twitch", "ChatGPT", "Netflix", "Spotify"]
         
         primary_results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             v4_futures = {executor.submit(query_primary_geoip, ipv4, s): s for s in primary_services}
             v6_futures = {executor.submit(query_primary_geoip, ipv6, s): s for s in primary_services}
             
@@ -1113,12 +1118,67 @@ def run_diagnostics_report() -> str:
     report.append("## 2. Сетевое геоопределение (IP Geolocation)")
     ipv4 = get_ip_address(4) or "—"
     ipv6 = get_ip_address(6) or "—"
+
+    # Получаем детальную инфу для IPv4
+    v4_detail = {"isp": "—", "asn": "—", "location": "—"}
+    if ipv4 and ipv4 != "—":
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"}
+            req = urllib.request.Request(f"http://ip-api.com/json/{ipv4}", headers=headers)
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                if res_data.get("status") == "success":
+                    v4_detail["isp"] = res_data.get("isp") or res_data.get("org") or "—"
+                    as_val = res_data.get("as", "—")
+                    v4_detail["asn"] = as_val.split()[0] if as_val and as_val != "—" else "—"
+                    
+                    loc_parts = []
+                    if res_data.get("country"):
+                        loc_parts.append(res_data["country"])
+                    if res_data.get("city"):
+                        loc_parts.append(res_data["city"])
+                    v4_detail["location"] = ", ".join(loc_parts) if loc_parts else "—"
+        except Exception:
+            pass
+
+    # Получаем детальную инфу для IPv6
+    v6_detail = {"isp": "—", "asn": "—", "location": "—"}
+    if ipv6 and ipv6 != "—":
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"}
+            req = urllib.request.Request(f"http://ip-api.com/json/{ipv6}", headers=headers)
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                if res_data.get("status") == "success":
+                    v6_detail["isp"] = res_data.get("isp") or res_data.get("org") or "—"
+                    as_val = res_data.get("as", "—")
+                    v6_detail["asn"] = as_val.split()[0] if as_val and as_val != "—" else "—"
+                    
+                    loc_parts = []
+                    if res_data.get("country"):
+                        loc_parts.append(res_data["country"])
+                    if res_data.get("city"):
+                        loc_parts.append(res_data["city"])
+                    v6_detail["location"] = ", ".join(loc_parts) if loc_parts else "—"
+        except Exception:
+            pass
+
     report.append(f"- **Внешний IPv4**: `{ipv4}`")
+    if ipv4 and ipv4 != "—":
+        report.append(f"  - **Провайдер/ISP**: `{v4_detail['isp']}`")
+        report.append(f"  - **ASN**: `{v4_detail['asn']}`")
+        report.append(f"  - **Геолокация**: `{v4_detail['location']}`")
+        
     report.append(f"- **Внешний IPv6**: `{ipv6}`")
+    if ipv6 and ipv6 != "—":
+        report.append(f"  - **Провайдер/ISP**: `{v6_detail['isp']}`")
+        report.append(f"  - **ASN**: `{v6_detail['asn']}`")
+        report.append(f"  - **Геолокация**: `{v6_detail['location']}`")
+        
     report.append("")
     
     system_has_ipv6 = check_system_ipv6()
-    primary_services = ["IPINFO_IO", "CLOUDFLARE", "IPAPI_CO", "IPAPI_COM", "IPWHO_IS"]
+    primary_services = ["MAXMIND", "IPINFO_IO", "CLOUDFLARE", "IPREGISTRY", "IPAPI_CO", "IPAPI_COM", "IPWHO_IS", "IP2LOCATION_IO"]
     custom_services = ["Google", "YouTube", "Twitch", "ChatGPT", "Netflix", "Spotify"]
     
     report.append("### Детекция баз GeoIP")
