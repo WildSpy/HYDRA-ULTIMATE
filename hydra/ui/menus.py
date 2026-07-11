@@ -328,6 +328,45 @@ def _user_links(state: AppState, user: User):
     print(f"\n  {CYAN}Конфиги и ссылки для {BOLD}{user.email}{NC}\n")
 
     for p in enabled(state, PluginCategory.TRANSPORT):
+        if p.meta.name == "amneziawg":
+            ps = state.protocols.get("amneziawg")
+            has_mobile = ps and "profiles" in ps.config and "mobile" in ps.config["profiles"]
+            profiles = ["desktop"]
+            if has_mobile:
+                profiles.append("mobile")
+            
+            for prof in profiles:
+                conf = ""
+                link = ""
+                try:
+                    conf = p.generate_client_config(user, state, profile=prof) or ""
+                except Exception:
+                    pass
+                try:
+                    link = p.client_link(user, state, profile=prof) or ""
+                except Exception:
+                    pass
+                if not conf and not link:
+                    continue
+                label_ru = "ПК / Desktop" if prof == "desktop" else "Смартфон / Mobile"
+                print(f"  {CYAN}── {BOLD}{p.meta.name.upper()} ({label_ru}){NC}{CYAN}{'─' * (PANEL_W - 14 - len(p.meta.name) - len(label_ru))}{NC}")
+                if link:
+                    print(f"  {GREEN}Ссылка:{NC}  {link}")
+                    try:
+                        import qrcode
+                        qr = qrcode.QRCode()
+                        qr.add_data(link)
+                        qr.print_ascii()
+                    except ImportError:
+                        pass
+                if conf:
+                    print(f"  {DIM}{'─' * PANEL_W}{NC}")
+                    for line in conf.splitlines():
+                        print(f"  {DIM}{line}{NC}")
+                    print(f"  {DIM}{'─' * PANEL_W}{NC}")
+                print()
+            continue
+
         conf = ""
         link = ""
         try:
@@ -1232,6 +1271,55 @@ def _user_configs(state: AppState, user: User):
                     qr.print_ascii(invert=True)
                 except ImportError:
                     pass
+                continue
+
+            if p.meta.name == "amneziawg":
+                ps = state.protocols.get("amneziawg")
+                has_mobile = ps and "profiles" in ps.config and "mobile" in ps.config["profiles"]
+                profiles = ["desktop"]
+                if has_mobile:
+                    profiles.append("mobile")
+
+                for prof in profiles:
+                    link_prof = ""
+                    try:
+                        link_prof = p.client_link(user, state, profile=prof)
+                    except Exception:
+                        pass
+                    
+                    try:
+                        conf = p.generate_client_config(user, state, profile=prof)
+                        if conf:
+                            box_lines = []
+                            label_ru = "ПК / Desktop" if prof == "desktop" else "Смартфон / Mobile"
+                            
+                            # Показываем ссылку, если она есть
+                            if link_prof:
+                                box_lines.append(f"{YELLOW}{BOLD}Ссылка для подключения (URL - {label_ru}):{NC}")
+                                link_width = PANEL_W - 6
+                                for chunk in [link_prof[i:i+link_width] for i in range(0, len(link_prof), link_width)]:
+                                    box_lines.append(f"  {CYAN}{chunk}{NC}")
+                                box_lines.append(f"{DIM}{'─' * (PANEL_W - 4)}{NC}")
+                            
+                            # Показываем конфиг
+                            box_lines.append(f"{GREEN}{BOLD}Файл конфигурации (Client Config - {label_ru}):{NC}")
+                            for line in conf.splitlines():
+                                box_lines.append(f"  {DIM}{line.rstrip()}{NC}")
+                            
+                            panel(f"🔧  {p.meta.name.upper()} {prof.upper()} CONFIG", box_lines)
+                            
+                            # QR-код (если qrcode установлен)
+                            try:
+                                import qrcode
+                                qr = qrcode.QRCode(border=1)
+                                target = link_prof if link_prof else conf
+                                qr.add_data(target)
+                                print(f"\n  {BOLD}{WHITE}Отсканируйте QR-код для быстрого импорта ({label_ru}):{NC}")
+                                qr.print_ascii(invert=True)
+                            except ImportError:
+                                pass
+                    except Exception as e:
+                        error(f"  Ошибка получения конфигурации {p.meta.name} ({prof}): {e}")
                 continue
 
             conf = p.generate_client_config(user, state)
