@@ -340,7 +340,9 @@ def generate_base64_sub(user: User, state: AppState) -> str:
             scheme = parsed.scheme.lower()
             
             proto_suffix = ""
-            if scheme in ("naive", "naive+quic", "naive+https"):
+            if scheme == "naive+quic":
+                proto_suffix = "NaiveProxy QUIC"
+            elif scheme in ("naive", "naive+https"):
                 proto_suffix = "NaiveProxy"
             elif scheme == "anytls":
                 proto_suffix = "AnyTLS"
