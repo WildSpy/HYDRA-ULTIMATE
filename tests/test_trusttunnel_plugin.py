@@ -215,5 +215,6 @@ def test_client_links():
     
     links = p.client_links(user, state)
     assert len(links) == 2
-    assert any(link.startswith("tt://") for link in links)
-    assert any(link.startswith("tt+quic://") for link in links)
+    assert all(link.startswith("tt://") for link in links)
+    assert any("alpn=h2" in link for link in links)
+    assert any("alpn=h3" in link for link in links)

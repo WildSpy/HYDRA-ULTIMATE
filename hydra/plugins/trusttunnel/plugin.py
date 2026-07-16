@@ -272,7 +272,8 @@ class TrustTunnelPlugin(BasePlugin):
 
         if transport == "quic":
             tag_q = urllib.parse.quote(f"{self._derive_username(user)} TrustTunnel QUIC", safe="")
-            return f"tt+quic://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h3#{tag_q}"
+            fp_param = f"&fp={preset.utls_fingerprint}" if preset.utls_fingerprint else ""
+            return f"tt://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h3{fp_param}#{tag_q}"
 
         fp_param = f"&fp={preset.utls_fingerprint}" if preset.utls_fingerprint else ""
         return f"tt://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h2{fp_param}#{tag}"
@@ -300,7 +301,7 @@ class TrustTunnelPlugin(BasePlugin):
 
         if transport in ("quic", "both"):
             tag = urllib.parse.quote(f"{self._derive_username(user)} TrustTunnel QUIC", safe="")
-            links.append(f"tt+quic://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h3{fp_param}#{tag}")
+            links.append(f"tt://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h3{fp_param}#{tag}")
 
         return links
 
