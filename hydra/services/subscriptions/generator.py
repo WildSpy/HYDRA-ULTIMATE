@@ -347,7 +347,13 @@ def generate_base64_sub(user: User, state: AppState) -> str:
             elif scheme == "anytls":
                 proto_suffix = "AnyTLS"
             elif scheme in ("tt", "trusttunnel"):
-                proto_suffix = "TrustTunnel"
+                # Различаем TCP и QUIC по параметру alpn
+                query = urllib.parse.parse_qs(parsed.query)
+                alpn = query.get("alpn", ["h2"])[0]
+                if alpn == "h3":
+                    proto_suffix = "TrustTunnel QUIC"
+                else:
+                    proto_suffix = "TrustTunnel"
             elif scheme == "mierus":
                 proto_suffix = "Mieru"
                 
