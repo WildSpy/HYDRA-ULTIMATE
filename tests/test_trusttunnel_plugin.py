@@ -170,7 +170,7 @@ def test_configure_quic_mode():
         
     assert len(frag.inbounds) == 1
     assert frag.inbounds[0]["type"] == "trusttunnel"
-    assert frag.inbounds[0]["network"] == "udp"
+    assert frag.inbounds[0]["quic"] is True
     assert frag.inbounds[0]["tls"]["alpn"] == ["h3"]
 
 

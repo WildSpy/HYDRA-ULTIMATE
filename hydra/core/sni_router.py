@@ -589,7 +589,27 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
 
     if naive_needs_quic or tt_needs_quic:
         quic_routes = []
-        if naive_needs_quic:
+        if naive_needs_quic and tt_needs_quic:
+            # Both enabled: route based on TLS SNI
+            quic_routes.append({
+                "match": [{"tls": {"sni": [naive_backend["domain"]]}}],
+                "handle": [
+                    {
+                        "handler": "proxy",
+                        "upstreams": [{"dial": [f"udp/127.0.0.1:{naive_backend['port']}"]}]
+                    }
+                ]
+            })
+            quic_routes.append({
+                "match": [{"tls": {"sni": [tt_backend["domain"]]}}],
+                "handle": [
+                    {
+                        "handler": "proxy",
+                        "upstreams": [{"dial": [f"udp/127.0.0.1:{tt_backend['port']}"]}]
+                    }
+                ]
+            })
+        elif naive_needs_quic:
             quic_routes.append({
                 "handle": [
                     {
