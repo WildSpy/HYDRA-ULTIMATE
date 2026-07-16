@@ -210,7 +210,7 @@ class TrustTunnelPlugin(BasePlugin):
                 "server_port": 443,
                 "username": username,
                 "password": password,
-                "network": "udp",
+                "quic": True,
                 "tls": {
                     "enabled": True,
                     "server_name": domain,
