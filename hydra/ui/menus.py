@@ -2910,7 +2910,6 @@ def _menu_trusttunnel(state: AppState, p):
                 options.append(("1", "⏸️  Выключить", "Отключить протокол"))
                 options.append(("2", "👥 Клиенты", "Подключённые клиенты и трафик"))
                 options.append(("3", "🔒 Пресет обфускации", f"Текущий: {preset_obj.label}"))
-                options.append(("4", "🌐 Сменить транспорт", f"Текущий: {transport_labels.get(current_transport, current_transport)}"))
             else:
                 options.append(("1", "▶️  Включить", "Активировать протокол"))
 
@@ -2959,9 +2958,6 @@ def _menu_trusttunnel(state: AppState, p):
 
         elif choice == "3" and ps.installed and ps.enabled:
             _menu_trusttunnel_preset(state, p)
-
-        elif choice == "4" and ps.installed and ps.enabled:
-            _menu_trusttunnel_transport(state, p)
 
         elif choice == "8" and ps.installed:
             if confirm("Переустановить?", default=False):
@@ -3028,28 +3024,7 @@ def _menu_trusttunnel_preset(state: AppState, p):
                 prompt("Нажмите Enter")
 
 
-def _menu_trusttunnel_transport(state: AppState, p):
-    """Меню выбора транспорта TrustTunnel."""
-    current = p.get_current_transport(state)
 
-    choice = menu([
-        ("1", "HTTP/2 (TCP)", "Стандартный режим, максимальная совместимость"),
-        ("2", "QUIC (UDP)", "HTTP/3 через UDP, может быть быстрее"),
-        ("3", "HTTP/2 + QUIC", "Оба транспорта одновременно (2 ссылки на клиента)"),
-        ("0", "↩ Отмена", ""),
-    ], header="Транспорт TrustTunnel")
-
-    if choice != "0":
-        mode_map = {"1": "tcp", "2": "quic", "3": "both"}
-        new_transport = mode_map.get(choice)
-        if new_transport:
-            transport_labels = {"tcp": "HTTP/2 (TCP)", "quic": "QUIC (UDP)", "both": "HTTP/2 + QUIC"}
-            info(f"Применяю транспорт {transport_labels.get(new_transport, new_transport)}...")
-            if p.set_transport(state, new_transport):
-                success(f"Транспорт изменён на {transport_labels.get(new_transport, new_transport)}")
-            else:
-                error("Не удалось изменить транспорт")
-            prompt("Нажмите Enter")
 
 
 def _awg_generate_wizard_menu(state: AppState, p):

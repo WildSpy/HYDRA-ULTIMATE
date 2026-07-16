@@ -20,8 +20,8 @@ class TrustTunnelPreset:
 PRESETS: dict[str, TrustTunnelPreset] = {
     "default": TrustTunnelPreset(
         name="default",
-        label="🌐 Стандартный",
-        description="Базовый HTTP/2 туннель, максимальная совместимость",
+        label="🌐 Standard (HTTP/2)",
+        description="Basic HTTP/2 proxy tunnel",
         transport="tcp",
         alpn=["h2"],
         utls_fingerprint=None,
@@ -30,8 +30,8 @@ PRESETS: dict[str, TrustTunnelPreset] = {
     ),
     "stealth": TrustTunnelPreset(
         name="stealth",
-        label="🥷 Стелс",
-        description="Chrome fingerprint + мультиплексирование + padding",
+        label="🥷 Stealth (Chrome JA3)",
+        description="Chrome uTLS fingerprinting, h2mux, packet padding",
         transport="tcp",
         alpn=["h2"],
         utls_fingerprint="chrome",
@@ -40,8 +40,8 @@ PRESETS: dict[str, TrustTunnelPreset] = {
     ),
     "fortress": TrustTunnelPreset(
         name="fortress",
-        label="🏰 Крепость",
-        description="Максимальная обфускация: рандом fingerprint, yamux, padding, TCP Brutal",
+        label="🏰 Fortress (Yamux + Brutal)",
+        description="Randomized uTLS fingerprinting, Yamux padding, TCP Brutal",
         transport="tcp",
         alpn=["h2"],
         utls_fingerprint="randomized",
