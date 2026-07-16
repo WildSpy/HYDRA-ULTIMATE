@@ -115,7 +115,7 @@ class TrustTunnelPlugin(BasePlugin):
                 "listen": quic_listen,
                 "listen_port": quic_port,
                 "users": users,
-                "quic": True,
+                "network": "udp",
                 "tls": {
                     "enabled": True,
                     "server_name": domain,
