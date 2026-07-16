@@ -14,7 +14,7 @@ from hydra.plugins.base import (
 from hydra.core.state import AppState, User
 from hydra.utils.crypto import derive_hex_key
 from hydra.utils.net import public_ip
-from hydra.plugins.trusttunnel.presets import get_preset, list_presets, validate_preset, PRESETS
+
 
 
 class TrustTunnelPlugin(BasePlugin):
@@ -65,12 +65,6 @@ class TrustTunnelPlugin(BasePlugin):
         cert_file, key_file = self._resolve_certs(domain, ps)
         if not cert_file or not key_file:
             return ConfigFragment()
-
-        # Пресет и транспорт
-        preset_name = ps.config.get("preset", "default") if ps and ps.config else "default"
-        preset = get_preset(preset_name)
-        # Пользователь может override транспорт отдельно от пресета
-        transport = ps.config.get("transport", preset.transport) if ps and ps.config else preset.transport
 
         # Порт: через SNI-мультиплексор или напрямую
         from hydra.core.sni_router import get_effective_port, needs_mux
@@ -130,10 +124,6 @@ class TrustTunnelPlugin(BasePlugin):
         password = self._derive_password(user.uuid)
         server_ip = state.network.server_ip or public_ip()
 
-        preset_name = ps.config.get("preset", "default") if ps and ps.config else "default"
-        preset = get_preset(preset_name)
-        transport = ps.config.get("transport", preset.transport) if ps and ps.config else preset.transport
-
         outbounds = []
 
         # TCP outbound
@@ -149,25 +139,6 @@ class TrustTunnelPlugin(BasePlugin):
                 "server_name": domain,
             },
         }
-        # uTLS fingerprint (client-side only)
-        if preset.utls_fingerprint:
-            tcp_out["tls"]["utls"] = {
-                "enabled": True,
-                "fingerprint": preset.utls_fingerprint,
-                }
-        # Multiplex
-        if preset.multiplex:
-            mux = {"enabled": True, "protocol": preset.multiplex["protocol"]}
-            if "max_connections" in preset.multiplex:
-                mux["max_connections"] = preset.multiplex["max_connections"]
-            if "min_streams" in preset.multiplex:
-                mux["min_streams"] = preset.multiplex["min_streams"]
-            if "max_streams" in preset.multiplex:
-                mux["max_streams"] = preset.multiplex["max_streams"]
-            mux["padding"] = preset.padding
-            if "brutal" in preset.multiplex:
-                mux["brutal"] = preset.multiplex["brutal"]
-            tcp_out["multiplex"] = mux
         outbounds.append(tcp_out)
 
         direct_out = {"type": "direct", "tag": "direct"}
@@ -199,34 +170,12 @@ class TrustTunnelPlugin(BasePlugin):
         password = urllib.parse.quote(self._derive_password(user.uuid), safe="")
         tag = urllib.parse.quote(self._derive_username(user), safe="")
 
-        preset_name = ps.config.get("preset", "default") if ps and ps.config else "default"
-        preset = get_preset(preset_name)
-        transport = ps.config.get("transport", preset.transport) if ps and ps.config else preset.transport
-
-        fp_param = f"&fp={preset.utls_fingerprint}" if preset.utls_fingerprint else ""
-        return f"tt://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h2{fp_param}#{tag}"
+        return f"tt://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h2#{tag}"
 
     def client_links(self, user: User, state: AppState) -> list[str]:
-        """Возвращает список ссылок (может быть >1 при transport=both)."""
-        ps = state.protocols.get("trusttunnel")
-        domain = (ps.config.get("domain", "") if ps and ps.config else "")
-        if not domain:
-            return []
-
-        username = urllib.parse.quote(self._derive_username(user), safe="")
-        password = urllib.parse.quote(self._derive_password(user.uuid), safe="")
-
-        preset_name = ps.config.get("preset", "default") if ps and ps.config else "default"
-        preset = get_preset(preset_name)
-        transport = ps.config.get("transport", preset.transport) if ps and ps.config else preset.transport
-
-        fp_param = f"&fp={preset.utls_fingerprint}" if preset.utls_fingerprint else ""
-        links = []
-
-        tag = urllib.parse.quote(f"{self._derive_username(user)} TrustTunnel", safe="")
-        links.append(f"tt://{username}:{password}@{domain}:443?security=tls&sni={domain}&alpn=h2{fp_param}#{tag}")
-
-        return links
+        """Возвращает список ссылок."""
+        link = self.client_link(user, state)
+        return [link] if link else []
 
     # ═════════════════════════════════════════════════════════════════════
     #  Управление сервисом
@@ -288,9 +237,6 @@ class TrustTunnelPlugin(BasePlugin):
         # Firewall (порт 443)
         from hydra.utils.firewall import open_tcp
         open_tcp(443, "trusttunnel")
-
-        ps.config.setdefault("preset", "default")
-        ps.config.setdefault("transport", "tcp")
         
         # iptables accounting
         self._remove_iptables_rules()
@@ -422,55 +368,7 @@ class TrustTunnelPlugin(BasePlugin):
     #  Внутренние помощники
     # ═════════════════════════════════════════════════════════════════════
 
-    # ═════════════════════════════════════════════════════════════════════
-    #  Управление пресетами
-    # ═════════════════════════════════════════════════════════════════════
 
-    def get_current_preset(self, state: AppState) -> str:
-        """Возвращает имя текущего пресета."""
-        ps = state.protocols.get("trusttunnel")
-        if ps and ps.config and "preset" in ps.config:
-            return ps.config["preset"]
-        return "default"
-
-    def get_current_transport(self, state: AppState) -> str:
-        """Возвращает текущий транспорт (может отличаться от пресетного)."""
-        ps = state.protocols.get("trusttunnel")
-        if ps and ps.config and "transport" in ps.config:
-            return ps.config["transport"]
-        preset = get_preset(self.get_current_preset(state))
-        return preset.transport
-
-    def set_preset(self, state: AppState, preset_name: str) -> bool:
-        """Устанавливает пресет и применяет конфиг."""
-        if not validate_preset(preset_name):
-            return False
-        from hydra.core.state import get_protocol, save_state
-        ps = get_protocol(state, "trusttunnel")
-        ps.config["preset"] = preset_name
-        # Сбрасываем override транспорта — пресет задаёт свой
-        preset = get_preset(preset_name)
-        ps.config["transport"] = preset.transport
-        save_state(state)
-        from hydra.core import orchestrator
-        return orchestrator.apply_config(state)
-
-    def set_transport(self, state: AppState, transport: str) -> bool:
-        """Устанавливает транспорт (override поверх пресета)."""
-        if transport not in ("tcp",):
-            return False
-        from hydra.core.state import get_protocol, save_state
-        ps = get_protocol(state, "trusttunnel")
-        ps.config["transport"] = transport
-        save_state(state)
-
-        self._remove_iptables_rules()
-        self._add_iptables_rules(state)
-
-        from hydra.core.sni_router import rebuild
-        rebuild(state)
-        from hydra.core import orchestrator
-        return orchestrator.apply_config(state)
 
     @staticmethod
     def _derive_username(user: User) -> str:

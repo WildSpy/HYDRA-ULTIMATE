@@ -2870,12 +2870,6 @@ def _menu_trusttunnel(state: AppState, p):
         # Статус
         try:
             st = p.status()
-            current_preset = p.get_current_preset(state)
-            current_transport = p.get_current_transport(state)
-            from hydra.plugins.trusttunnel.presets import get_preset as _tt_get_preset
-            preset_obj = _tt_get_preset(current_preset)
-            transport_labels = {"tcp": "HTTP/2 (TCP)", "quic": "QUIC (UDP)", "both": "HTTP/2 + QUIC"}
-
             lines = [
                 f"  Статус:      {'🟢 Работает' if st.running else '🔴 Остановлен'}",
                 f"  Установлен:  {_ok(st.installed)}",
@@ -2886,14 +2880,6 @@ def _menu_trusttunnel(state: AppState, p):
             domain = ps.config.get("domain", "") if ps.config else ""
             if domain:
                 lines.append(f"  Домен:       {domain}")
-            lines.append(f"  Транспорт:   {BOLD}{CYAN}{transport_labels.get(current_transport, current_transport)}{NC}")
-            lines.append(f"  Пресет:      {BOLD}{CYAN}{preset_obj.label}{NC}")
-            if preset_obj.utls_fingerprint:
-                lines.append(f"  Fingerprint: {preset_obj.utls_fingerprint}")
-            if preset_obj.multiplex:
-                lines.append(f"  Multiplex:   {preset_obj.multiplex['protocol']}")
-            if preset_obj.padding:
-                lines.append(f"  Padding:     Включён")
             if st.info:
                 for k, v in st.info.items():
                     lines.append(f"  {k}: {v}")
@@ -2909,12 +2895,11 @@ def _menu_trusttunnel(state: AppState, p):
             if ps.enabled:
                 options.append(("1", "⏸️  Выключить", "Отключить протокол"))
                 options.append(("2", "👥 Клиенты", "Подключённые клиенты и трафик"))
-                options.append(("3", "🔒 Пресет обфускации", f"Текущий: {preset_obj.label}"))
             else:
                 options.append(("1", "▶️  Включить", "Активировать протокол"))
 
-            options.append(("8", "🔄 Переустановить", "Переустановка протокола"))
-            options.append(("9", "❌ Удалить", "Полное удаление"))
+            options.append(("3", "🔄 Переустановить", "Переустановка протокола"))
+            options.append(("4", "❌ Удалить", "Полное удаление"))
 
         options.append(("0", "↩ Назад", ""))
 
@@ -2956,10 +2941,7 @@ def _menu_trusttunnel(state: AppState, p):
         elif choice == "2" and ps.installed and ps.enabled:
             _show_plugin_clients(state, p)
 
-        elif choice == "3" and ps.installed and ps.enabled:
-            _menu_trusttunnel_preset(state, p)
-
-        elif choice == "8" and ps.installed:
+        elif choice == "3" and ps.installed:
             if confirm("Переустановить?", default=False):
                 orchestrator.uninstall_plugin(state, p.meta.name)
                 ok = orchestrator.install_plugin(state, p.meta.name)
@@ -2973,7 +2955,7 @@ def _menu_trusttunnel(state: AppState, p):
                     error("Ошибка установки")
                 prompt("Нажмите Enter")
 
-        elif choice == "9" and ps.installed:
+        elif choice == "4" and ps.installed:
             if confirm("Вы уверены, что хотите полностью удалить TrustTunnel?", default=False):
                 orchestrator.uninstall_plugin(state, p.meta.name)
                 success("Удалено")
@@ -2981,47 +2963,7 @@ def _menu_trusttunnel(state: AppState, p):
                 return
 
 
-def _menu_trusttunnel_preset(state: AppState, p):
-    """Меню выбора пресета обфускации TrustTunnel."""
-    from hydra.plugins.trusttunnel.presets import list_presets
 
-    while True:
-        clear()
-        current_preset = p.get_current_preset(state)
-        presets = list_presets()
-
-        lines = [
-            f"Текущий пресет обфускации: {BOLD}{CYAN}{current_preset}{NC}",
-            "",
-            "Смена пресета перегенерирует конфигурацию sing-box.",
-            "Клиенты получат новые настройки при обновлении подписки.",
-        ]
-        panel("🔒 ОБФУСКАЦИЯ TRUSTTUNNEL", lines)
-        print()
-
-        transport_labels = {"tcp": "TCP", "quic": "QUIC", "both": "TCP+QUIC"}
-        options = []
-        for idx, pr in enumerate(presets, 1):
-            marker = "• " if pr["name"] == current_preset else "  "
-            badge = f"[{transport_labels.get(pr['transport'], pr['transport'])}]"
-            options.append((str(idx), f"{marker}{pr['label']} {badge}", pr["description"]))
-
-        options.append(("0", "↩ Назад", ""))
-
-        choice = menu(options, "ПРЕСЕТ TRUSTTUNNEL")
-        if choice == "0":
-            break
-
-        if choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(presets):
-                preset_name = presets[idx]["name"]
-                info(f"Применяю пресет обфускации {preset_name}...")
-                if p.set_preset(state, preset_name):
-                    success(f"Пreset {presets[idx]['label']} успешно применён!")
-                else:
-                    error("Не удалось применить пресет")
-                prompt("Нажмите Enter")
 
 
 

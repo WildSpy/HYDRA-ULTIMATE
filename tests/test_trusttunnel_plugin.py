@@ -141,37 +141,5 @@ def test_on_user_add():
     assert len(user.credentials["trusttunnel"]["password"]) > 0
 
 
-def test_presets_logic():
-    from hydra.plugins.trusttunnel.presets import list_presets, get_preset, validate_preset
-    
-    presets = list_presets()
-    assert len(presets) == 3
-    assert any(pr["name"] == "stealth" for pr in presets)
-    
-    default_pr = get_preset("default")
-    assert default_pr.name == "default"
-    assert default_pr.transport == "tcp"
-    
-    invalid_pr = get_preset("nonexistent")
-    assert invalid_pr.name == "default"
-    
-    assert validate_preset("stealth") is True
-    assert validate_preset("nonexistent") is False
 
-
-
-def test_generate_client_config_with_multiplex():
-    p = TrustTunnelPlugin()
-    state = _state([_user("a@x.com", uuid="uuid-a")])
-    state.protocols["trusttunnel"].config["preset"] = "stealth"
-    user = state.users[0]
-    
-    config_str = p.generate_client_config(user, state)
-    parsed = json.loads(config_str)
-    
-    outbound = parsed["outbounds"][0]
-    assert outbound["tls"]["utls"]["fingerprint"] == "chrome"
-    assert outbound["multiplex"]["enabled"] is True
-    assert outbound["multiplex"]["protocol"] == "h2mux"
-    assert outbound["multiplex"]["padding"] is True
 
