@@ -293,6 +293,14 @@ ignoreregex =
                 "[DEFAULT]\n"
                 f"ignoreip = {' '.join(self._valid_whitelist(state))}\n"
             ),
+            # Debian/Ubuntu may enable the stock sshd jail in
+            # jail.d/defaults-debian.conf. On journal-only systems it then
+            # aborts startup because /var/log/auth.log does not exist. Hydra
+            # provides hydra-sshd with the systemd backend instead.
+            JAIL_DIR / "zz-hydra-disable-default-sshd.local": (
+                "[sshd]\n"
+                "enabled = false\n"
+            ),
         }
         for name, content in self._filters().items():
             contents[FILTER_DIR / f"{name}.conf"] = content
@@ -351,6 +359,7 @@ ignoreregex =
     @staticmethod
     def _remove_owned_configuration() -> None:
         (JAIL_DIR / "00-hydra-defaults.local").unlink(missing_ok=True)
+        (JAIL_DIR / "zz-hydra-disable-default-sshd.local").unlink(missing_ok=True)
         for name in _OWNED_JAILS:
             (JAIL_DIR / f"{name}.local").unlink(missing_ok=True)
         for name in _OWNED_FILTERS:

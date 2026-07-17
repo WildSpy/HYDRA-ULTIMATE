@@ -89,8 +89,10 @@ def test_on_enable_reports_service_diagnostics():
 
 def test_whitelist_is_normalized_and_invalid_values_are_ignored():
     result = HoneypotPlugin._normalize_whitelist([
-        "192.168.1.42", "10.0.0.99/24", "bad-value",
+        "127.0.0.1/8", "192.168.1.42", "10.0.0.99/24", "bad-value",
     ])
+    assert "127.0.0.0/8" in result
+    assert "127.0.0.1/8" not in result
     assert "192.168.1.42/32" in result
     assert "10.0.0.0/24" in result
     assert "bad-value" not in result
@@ -104,6 +106,7 @@ def test_generated_script_records_only_verified_firewall_bans():
         p._write_script(9999, ["127.0.0.1/8"])
     script = write_text.call_args.args[0]
     compile(script, "hydra-honeypot.py", "exec")
+    assert "ipaddress.ip_network(item, strict=False)" in script
     assert "if not ok:\n        return False" in script
     assert '"-C", "INPUT"' in script
     assert '"-I", "INPUT", "1"' in script

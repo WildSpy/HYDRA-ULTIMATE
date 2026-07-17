@@ -99,7 +99,7 @@ class HoneypotPlugin(BasePlugin):
 
     @staticmethod
     def _normalize_whitelist(values: list[object]) -> list[str]:
-        result = ["127.0.0.1/8", "::1/128"]
+        result = ["127.0.0.0/8", "::1/128"]
         for value in values:
             try:
                 network = ipaddress.ip_network(str(value), strict=False)
@@ -128,7 +128,7 @@ class HoneypotPlugin(BasePlugin):
             from pathlib import Path
 
             PORT = {port}
-            WHITELIST = [ipaddress.ip_network(item) for item in {normalized!r}]
+            WHITELIST = [ipaddress.ip_network(item, strict=False) for item in {normalized!r}]
             LOG = Path({str(HONEYPOT_LOG)!r})
             STATE = Path({str(HONEYPOT_STATE)!r})
             COMMENT = {_FW_COMMENT!r}
@@ -323,7 +323,7 @@ class HoneypotPlugin(BasePlugin):
         default = {
             "banned": {},
             "port": HONEYPOT_PORT,
-            "whitelist": ["127.0.0.1/8", "::1/128"],
+            "whitelist": ["127.0.0.0/8", "::1/128"],
         }
         if HONEYPOT_STATE.exists():
             try:

@@ -100,6 +100,7 @@ def test_write_jails_with_whitelist():
         assert p._write_jails(state) is True
         
     assert "00-hydra-defaults.local" in written_files
+    assert written_files["zz-hydra-disable-default-sshd.local"] == "[sshd]\nenabled = false\n"
     content = written_files["00-hydra-defaults.local"]
     assert "ignoreip = 127.0.0.1/8 ::1 192.168.1.100 10.0.0.0/24" in content
 
