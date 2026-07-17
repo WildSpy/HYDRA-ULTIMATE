@@ -1,6 +1,6 @@
-# 🐙 HYDRA v2.4.0 — Multi-Protocol Proxy & Routing Orchestrator
+# 🐙 HYDRA v2.4.1 — Multi-Protocol Proxy & Routing Orchestrator
 
-[![Version](https://img.shields.io/badge/version-2.4.0-blue.svg?style=flat-square)](https://github.com/WildSpy/HYDRA-ULTIMATE)
+[![Version](https://img.shields.io/badge/version-2.4.1-blue.svg?style=flat-square)](https://github.com/WildSpy/HYDRA-ULTIMATE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg?style=flat-square)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-lightgrey.svg?style=flat-square)](https://ubuntu.com/)
@@ -328,7 +328,7 @@ python3 -m hydra.services.webpanel.auth configure --host 0.0.0.0 --port 8443 --t
 
 ## 📜 История изменений (Changelog)
 
-### [2.4.0] — 18.07.2026
+### [2.4.1] — 18.07.2026
 
 | Компонент | Описание изменений |
 | :--- | :--- |
