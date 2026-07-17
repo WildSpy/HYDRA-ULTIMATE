@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>HYDRA — Панель управления</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- Экран входа -->
+  <div id="login" class="login-screen hidden">
+    <form id="login-form" class="login-card" autocomplete="off">
+      <div class="login-logo">🐙 HYDRA</div>
+      <div class="login-sub">Панель управления</div>
+      <input id="login-user" type="text" placeholder="Логин" autocomplete="username" value="admin">
+      <input id="login-pass" type="password" placeholder="Пароль" autocomplete="current-password">
+      <button type="submit">Войти</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+  </div>
+
+  <!-- Приложение -->
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">🐙 <span>HYDRA</span></div>
+      <nav id="nav"></nav>
+      <div class="sidebar-foot">
+        <button id="logout" class="btn-ghost">Выйти</button>
+        <div class="ver" id="panel-host"></div>
+      </div>
+    </aside>
+    <main class="content">
+      <header class="topbar">
+        <div id="crumb" class="crumb"></div>
+        <div class="topbar-right">
+          <button id="refresh" class="btn-ghost" title="Обновить">⟳</button>
+          <span id="whoami" class="whoami"></span>
+        </div>
+      </header>
+      <section id="view" class="view"></section>
+    </main>
+  </div>
+
+  <!-- Модалка задачи -->
+  <div id="task-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head"><span id="task-title">Выполнение…</span>
+        <button id="task-close" class="btn-ghost">×</button></div>
+      <pre id="task-log" class="task-log"></pre>
+      <div id="task-status" class="task-status"></div>
+    </div>
+  </div>
+
+  <!-- Тосты -->
+  <div id="toasts" class="toasts"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
