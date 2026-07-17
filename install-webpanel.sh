@@ -24,6 +24,22 @@ err(){ echo -e "${RED}[x]${NC} $*" >&2; }
 REPO_URL="${HYDRA_PANEL_REPO:-https://github.com/WildSpy/HYDRA-ULTIMATE}"
 BRANCH="${HYDRA_PANEL_BRANCH:-main}"
 
+# Режимы: --update (только обновить код + рестарт), --reinstall (полная переустановка).
+MODE_ARG=""
+for a in "$@"; do
+  case "$a" in
+    --update) MODE_ARG="update" ;;
+    --reinstall) MODE_ARG="reinstall" ;;
+    -h|--help)
+      echo "Использование: install-webpanel.sh [--update|--reinstall]"
+      echo "  (без аргументов) — установка; если панель уже стоит, выполняется обновление"
+      echo "  --update    — только обновить код панели и перезапустить службу"
+      echo "  --reinstall — заново спросить логин/пароль и режим доступа"
+      exit 0 ;;
+  esac
+done
+[[ "${HYDRA_PANEL_UPDATE:-}" == "1" ]] && MODE_ARG="update"
+
 # ── 1. Проверки ──────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then err "Запустите от root: sudo bash install-webpanel.sh"; exit 1; fi
 if ! command -v python3 >/dev/null 2>&1; then err "python3 не найден"; exit 1; fi
@@ -65,6 +81,34 @@ fetch_webpanel() {
   rm -rf "$tmp"
   ok "Пакет панели скопирован в $INSTALL_DIR/hydra/services/webpanel"
 }
+
+# Автоопределение: панель уже установлена (есть конфиг + systemd-юнит)?
+ALREADY_INSTALLED=0
+if [[ -f /var/lib/hydra/webpanel.json && -f /etc/systemd/system/hydra-webpanel.service ]]; then
+  ALREADY_INSTALLED=1
+fi
+# Без явного режима: если панель уже стоит — это обновление.
+if [[ -z "$MODE_ARG" && "$ALREADY_INSTALLED" == "1" ]]; then
+  MODE_ARG="update"
+  info "Обнаружена существующая установка панели — режим обновления."
+  info "(для повторной настройки логина/доступа: --reinstall)"
+fi
+
+# ── Быстрый путь: ОБНОВЛЕНИЕ ──────────────────────────────────────────────────
+if [[ "$MODE_ARG" == "update" ]]; then
+  fetch_webpanel || { err "Не удалось обновить пакет панели."; exit 1; }
+  if ! PYTHONPATH="$INSTALL_DIR" python3 -c "import hydra.services.webpanel.server" 2>/dev/null; then
+    err "Обновлённый пакет не импортируется. Проверьте Python 3.10+ и ветку '$BRANCH'."
+    exit 1
+  fi
+  # На случай изменения ExecStart/юнита — перезапишем и перезапустим.
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl restart hydra-webpanel 2>/dev/null || warn "Служба не запущена — запустите вручную"
+  NEWV=$(PYTHONPATH="$INSTALL_DIR" python3 -c "from hydra.services.webpanel import __version__ as v; print(v)" 2>/dev/null || echo "?")
+  ok "Панель обновлена до версии $NEWV и перезапущена."
+  echo -e "  Логи: journalctl -u hydra-webpanel -n 20 --no-pager"
+  exit 0
+fi
 
 # Проверяем импортируемость пакета webpanel; если его нет — докачиваем из форка.
 if ! PYTHONPATH="$INSTALL_DIR" python3 -c "import hydra.services.webpanel.server" 2>/dev/null; then

@@ -181,9 +181,17 @@ VIEWS.dashboard = async (view) => {
 
 // ── Ядро ─────────────────────────────────────────────────────────────────
 VIEWS.core = async (view) => {
-  const s = await api("GET", "/api/system");
+  const [s, panel] = await Promise.all([
+    api("GET", "/api/system"),
+    api("GET", "/api/system/panel").catch(() => ({ version: "?" })),
+  ]);
   view.innerHTML = `
     <div class="grid grid-2">
+      ${card("Веб-панель", `
+        <p>Версия: <b>${esc(panel.version)}</b></p>
+        <p class="muted">Источник: ${esc(panel.repo || "")} (${esc(panel.branch || "main")})</p>
+        <p class="muted">Каталог: <span class="code">${esc(panel.install_dir || "")}</span></p>
+        <div class="btn-row"><button class="btn" id="c-panel-update">⬆ Обновить панель</button></div>`)}
       ${card("Sing-Box", `
         <p>Статус: ${badge(s.running, "запущен", "остановлен")} ${badge(s.installed, "установлен", "нет")}</p>
         <p class="muted">Версия: ${esc(s.version || "—")}</p>
@@ -203,7 +211,29 @@ VIEWS.core = async (view) => {
   $("#c-stop").onclick = async () => { await api("POST", "/api/system/singbox/stop"); toast("Остановлено"); route(); };
   $("#c-restart").onclick = async () => { await api("POST", "/api/system/singbox/restart"); toast("Перезапущено"); route(); };
   $("#c-apply").onclick = () => runTask("Применение конфигурации", () => api("POST", "/api/system/apply"), route);
+  $("#c-panel-update").onclick = () => {
+    if (!confirm("Скачать свежую версию панели из форка и перезапустить службу?")) return;
+    runTask("Обновление панели", () => api("POST", "/api/system/panel/update"), (task) => {
+      const r = task.result || {};
+      if (r.new_version) toast(`Панель обновлена: ${r.old_version} → ${r.new_version}. Переподключение…`, "ok", 8000);
+      waitForReconnect();
+    });
+  };
 };
+
+// После обновления служба перезапускается — ждём, пока API снова ответит, и перезагружаем UI.
+async function waitForReconnect() {
+  const st = $("#task-status");
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      await api("GET", "/api/session");
+      if (st) { st.className = "task-status ok"; st.textContent = "Панель перезапущена — обновляю…"; }
+      setTimeout(() => location.reload(), 800);
+      return;
+    } catch (e) { /* ещё поднимается */ }
+  }
+}
 
 // ── Протоколы ──────────────────────────────────────────────────────────────
 function protoCard(p) {
@@ -770,6 +800,9 @@ async function boot() {
     const s = await api("GET", "/api/session");
     ME = s.username; $("#whoami").textContent = "👤 " + ME;
     $("#panel-host").textContent = location.host;
+    api("GET", "/api/system/panel").then(p => {
+      $("#panel-host").textContent = location.host + " · v" + p.version;
+    }).catch(() => { });
     showApp();
     if (!location.hash) location.hash = "dashboard";
     route();

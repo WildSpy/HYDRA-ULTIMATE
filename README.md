@@ -1,6 +1,6 @@
-# 🐙 HYDRA v2.4.1 — Multi-Protocol Proxy & Routing Orchestrator
+# 🐙 HYDRA v2.5.0 — Multi-Protocol Proxy & Routing Orchestrator
 
-[![Version](https://img.shields.io/badge/version-2.4.1-blue.svg?style=flat-square)](https://github.com/WildSpy/HYDRA-ULTIMATE)
+[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg?style=flat-square)](https://github.com/WildSpy/HYDRA-ULTIMATE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg?style=flat-square)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-lightgrey.svg?style=flat-square)](https://ubuntu.com/)
@@ -282,6 +282,24 @@ sudo bash /opt/hydra/install-webpanel.sh
   ```
 * **Публичный режим**: `https://<server-ip>:8088`, вход по логину/паролю.
 
+### Обновление панели
+
+Версия панели видна в разделе **«Ядро»** и в футере (`v1.1.0`). Обновиться можно тремя способами (логин/пароль и настройки доступа при этом сохраняются):
+
+1. **Из самой панели** — раздел **«Ядро» → «Обновить панель»**: панель скачает свежий код из форка, перезапустит службу и переподключится автоматически.
+2. **Одной командой на сервере:**
+   ```bash
+   sudo bash /opt/hydra/install-webpanel.sh --update
+   # или тем же curl-one-liner — повторный запуск на установленной панели = обновление:
+   bash <(curl -fsSL https://raw.githubusercontent.com/WildSpy/HYDRA-ULTIMATE/main/install-webpanel.sh)
+   ```
+3. **CLI-обновлятор** (только код панели + рестарт):
+   ```bash
+   sudo python3 -m hydra.services.webpanel.updater --restart
+   ```
+
+> Обновляется только каталог `hydra/services/webpanel` (+ `requirements-webpanel.txt`). `state.json`, плагины, sing-box и настройки панели не затрагиваются. Ветку/репозиторий можно переопределить: `HYDRA_PANEL_BRANCH`, `HYDRA_PANEL_REPO`.
+
 ### Управление
 
 ```bash
@@ -328,7 +346,14 @@ python3 -m hydra.services.webpanel.auth configure --host 0.0.0.0 --port 8443 --t
 
 ## 📜 История изменений (Changelog)
 
-### [2.4.1] — 18.07.2026
+### [2.5.0] — 18.07.2026
+
+| Компонент | Описание изменений |
+| :--- | :--- |
+| **Веб-панель** | Механизм самообновления: кнопка «Обновить панель» в разделе «Ядро», CLI `python3 -m hydra.services.webpanel.updater`, режим `install-webpanel.sh --update`. Версия панели (1.1.0) отображается в UI, эндпоинты `GET/POST /api/system/panel`. |
+| **Исправление** | Параметры пути (email `%40`, IP и т.п.) теперь URL-декодируются — починены «Конфиги» и действия по email/IP. |
+
+### [2.4.0] — 18.07.2026
 
 | Компонент | Описание изменений |
 | :--- | :--- |

@@ -71,6 +71,40 @@ def task_list(ctx):
     return {"tasks": ctx.tasks.list()}
 
 
+def panel_info(ctx):
+    """Версия панели и параметры установки (для футера и проверки обновлений)."""
+    from hydra.services.webpanel import __version__
+    from hydra.services.webpanel.updater import (
+        install_dir, DEFAULT_REPO, DEFAULT_BRANCH,
+    )
+    from hydra.core.systemd import is_active
+    return {
+        "version": __version__,
+        "install_dir": str(install_dir()),
+        "repo": DEFAULT_REPO,
+        "branch": DEFAULT_BRANCH,
+        "service_active": is_active("hydra-webpanel"),
+    }
+
+
+def panel_update(ctx):
+    """Скачивает свежий пакет панели из форка и перезапускает службу (фон. задача)."""
+    repo = ctx.get("repo")
+    branch = ctx.get("branch")
+
+    def _job():
+        from hydra.services.webpanel import updater
+        info = updater.fetch_and_install(
+            repo or updater.DEFAULT_REPO, branch or updater.DEFAULT_BRANCH)
+        # Перезапуск в отдельной сессии — ответ успеет уйти до рестарта процесса.
+        updater.restart_service_detached()
+        info["restarting"] = True
+        print("Служба будет перезапущена через ~1 сек. Переподключитесь к панели.")
+        return info
+
+    return {"task_id": ctx.tasks.start("panel-update", _job)}
+
+
 def qr_svg(ctx):
     """Возвращает QR-код в виде SVG для произвольного текста (ссылки)."""
     text = ctx.require("text")
@@ -98,4 +132,6 @@ ROUTES = [
     ("GET", r"/api/tasks", task_list),
     ("GET", r"/api/tasks/(?P<id>[a-f0-9]+)", task_get),
     ("GET", r"/api/qr", qr_svg),
+    ("GET", r"/api/system/panel", panel_info),
+    ("POST", r"/api/system/panel/update", panel_update),
 ]
