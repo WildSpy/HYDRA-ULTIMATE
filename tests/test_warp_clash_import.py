@@ -140,7 +140,7 @@ def test_auto_discovery_rejects_multiple_yaml_files(tmp_path):
         load_or_refresh_warp_bundle(tmp_path / "ultimate.json")
 
 
-def test_imports_rule_provider_metadata(tmp_path):
+def test_import_ignores_clash_routing_data(tmp_path):
     source = tmp_path / "rules.yaml"
     source.write_text(_yaml() + """
 rule-providers:
@@ -159,11 +159,8 @@ rules:
   - RULE-SET,private,DIRECT
 """, encoding="utf-8")
     bundle = import_clash_warp_bundle(source, tmp_path / "ultimate.json")
-    providers = {item["name"]: item for item in bundle["rule_providers"]}
-    assert providers["youtube"]["supported"] is True
-    assert providers["youtube"]["route_group"] == "YouTube"
-    assert providers["private"]["supported"] is False
-    assert "MRS" in providers["private"]["unsupported_reason"]
+    assert bundle["version"] == 3
+    assert "rule_providers" not in bundle
 
 
 def test_tui_selected_location_becomes_selector_default(tmp_path):

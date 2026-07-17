@@ -1,4 +1,4 @@
-"""User-facing routing categories assembled from every WARP rule source."""
+"""User-facing routing categories assembled from HYDRA rule sources."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -51,8 +51,8 @@ def _normalise(value: str) -> str:
 def _identity(label: str, name: str) -> tuple[str, str, str, int]:
     normalised_label = _normalise(label)
     normalised_name = _normalise(name)
-    # Clash group is the author's intended user-facing category. Prefer it over
-    # individual provider names unless it is merely a technical catch-all.
+    # A source may declare a shared category so future catalogs can combine
+    # several feeds without exposing their technical names in the TUI.
     group_haystack = f" {normalised_label} "
     generic_group = normalised_label in ("", "без-группы", "direct", "proxy")
     haystack = f"{group_haystack} {normalised_name}"
@@ -66,15 +66,14 @@ def _identity(label: str, name: str) -> tuple[str, str, str, int]:
     title = raw.replace("_", " ").replace("-", " ").strip()
     title = title[:1].upper() + title[1:] if title else "Другая категория"
     key = "custom-" + (_normalise(raw) or "other")
-    return key, title, "Категория из загруженной конфигурации", 300
+    return key, title, "Категория правил HYDRA", 300
 
 
 def build_routing_catalog(
-    bundle: dict | None,
     external_lists: dict,
     local_lists: dict,
 ) -> list[RoutingCategory]:
-    """Merge YAML providers, built-ins and local lists into semantic categories."""
+    """Merge HYDRA's external sources and user lists into semantic categories."""
     grouped: dict[str, dict] = {}
 
     def add(source_key: str, name: str, group: str, origin: str, description: str = "") -> None:
@@ -89,18 +88,13 @@ def build_routing_catalog(
         if source_key not in item["source_keys"]:
             item["source_keys"].append(source_key)
             item["sources"].append(origin)
-        if item["description"] == "Категория из загруженной конфигурации" and description:
+        if item["description"] == "Категория правил HYDRA" and description:
             item["description"] = description
 
     for name, data in external_lists.items():
-        add(f"ext:{name}", str(data.get("name", name)), name, "каталог HYDRA", str(data.get("desc", "")))
-
-    for provider in (bundle or {}).get("rule_providers", []):
-        if not provider.get("supported") or not provider.get("name"):
-            continue
-        name = str(provider["name"])
-        group = str(provider.get("route_group") or name)
-        add(f"yaml:{name}", name, group, f"загруженный конфиг: {name}")
+        group = str(data.get("category", name))
+        display_name = str(data.get("name", name))
+        add(f"ext:{name}", display_name, group, f"каталог HYDRA: {display_name}", str(data.get("desc", "")))
 
     for name in local_lists:
         if name == "default":

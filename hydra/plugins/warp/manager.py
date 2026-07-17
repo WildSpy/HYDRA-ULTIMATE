@@ -78,6 +78,15 @@ def _ultimate_endpoint_options(bundle: dict | None) -> list[tuple[str, str]]:
     ]
 
 
+def _remove_legacy_yaml_routes(ps) -> bool:
+    """Drop routes created by the retired Clash rule-provider importer."""
+    list_targets = ps.config.setdefault("list_targets", {})
+    legacy_keys = [key for key in list_targets if key.startswith("yaml:")]
+    for key in legacy_keys:
+        list_targets.pop(key, None)
+    return bool(legacy_keys)
+
+
 def _compact_destination_options(plugin, ps, bundle: dict | None) -> list[tuple[str, str]]:
     """Return friendly destinations, prioritising locations chosen by the user."""
     endpoint_options = _ultimate_endpoint_options(bundle)
@@ -202,6 +211,8 @@ def menu_warp(state: AppState, plugin) -> None:
         # Читаем списки
         local_lists = ps.config.setdefault("local_lists", {})
         list_targets = ps.config.setdefault("list_targets", {})
+        if _remove_legacy_yaml_routes(ps):
+            save_state(state)
 
         status_lines = []
         if not st.installed and not custom_profiles:
@@ -223,15 +234,18 @@ def menu_warp(state: AppState, plugin) -> None:
             if ultimate_bundle:
                 endpoint_count = len(ultimate_bundle.get("endpoints", []))
                 endpoint_labels = dict(_ultimate_endpoint_options(ultimate_bundle))
-                selected = ps.config.get("ultimate_selected_tag")
-                selected_label = endpoint_labels.get(selected, next(iter(endpoint_labels.values()), "не выбрана"))
-                status_lines.append(f"  • warp_ultimate:  {MAGENTA}{endpoint_count} точек; выбрана: {selected_label}{NC}")
+                favourite_labels = [
+                    endpoint_labels[tag] for tag in ps.config.get("ultimate_route_tags", [])
+                    if tag in endpoint_labels
+                ]
+                selected_text = ", ".join(favourite_labels) if favourite_labels else "не выбраны"
+                status_lines.append(f"  • WARP-локации:  {MAGENTA}{endpoint_count} доступно; мои: {selected_text}{NC}")
 
             status_lines.append("  " + "─" * 45)
 
             status_lines.append(f"  {BOLD}Маршрутизация по категориям:{NC}")
             from hydra.plugins.warp.plugin import EXTERNAL_LISTS
-            categories = build_routing_catalog(ultimate_bundle, EXTERNAL_LISTS, local_lists)
+            categories = build_routing_catalog(EXTERNAL_LISTS, local_lists)
             destination_labels = dict(destination_options)
             active_routes = 0
             for category in categories:
@@ -615,7 +629,7 @@ def _menu_routing_rules(
 
     while True:
         clear()
-        categories = build_routing_catalog(ultimate_bundle, EXTERNAL_LISTS, local_lists)
+        categories = build_routing_catalog(EXTERNAL_LISTS, local_lists)
         destination_labels = dict(destination_options)
         destination_labels["none"] = "не настроено"
         destination_labels["mixed"] = "несколько направлений"
@@ -642,17 +656,6 @@ def _menu_routing_rules(
             for category in categories:
                 detail_lines.append(f"  {BOLD}{category.label}{NC} — {category.description}")
                 detail_lines.extend(f"    • {source}" for source in category.sources)
-            unsupported = [
-                item for item in (ultimate_bundle or {}).get("rule_providers", [])
-                if not item.get("supported")
-            ]
-            if unsupported:
-                detail_lines.append("")
-                detail_lines.append(f"  {YELLOW}Не удалось использовать:{NC}")
-                detail_lines.extend(
-                    f"    • {item.get('name')}: {item.get('unsupported_reason')}"
-                    for item in unsupported
-                )
             panel("СОСТАВ КАТЕГОРИЙ", detail_lines or ["  Нет источников правил."])
             prompt("Нажмите Enter для продолжения")
             continue
@@ -671,7 +674,7 @@ def _menu_routing_rules(
             success(f"Отдельный маршрут для «{category.label}» отключён.")
         else:
             success(f"«{category.label}» → {dict(destination_options).get(chosen, chosen)}")
-        if any(key.startswith(("ext:", "yaml:")) for key in category.source_keys):
+        if any(key.startswith("ext:") for key in category.source_keys):
             info("Обновляю правила категории...")
             plugin = __import__("hydra.plugins.warp.plugin").plugins.warp.plugin.WarpPlugin()
             ok, message = plugin.update_external_rules()
@@ -718,15 +721,13 @@ def _menu_geo_profiles(state: AppState, ps) -> None:
             endpoint_labels = dict(_ultimate_endpoint_options(ultimate_bundle))
             favourite_tags = ps.config.get("ultimate_route_tags", [])
             favourite_labels = [endpoint_labels[tag] for tag in favourite_tags if tag in endpoint_labels]
-            providers = ultimate_bundle.get("rule_providers", [])
-            supported_providers = sum(bool(item.get("supported")) for item in providers)
             status_lines.append(
                 f"  {MAGENTA}Загружено:{NC} {ultimate_bundle.get('name', 'конфигурация')} — "
                 f"{count} локаций" + (f", пропущено: {skipped}" if skipped else "")
             )
             selected_text = ", ".join(favourite_labels) if favourite_labels else "только прямое подключение и автовыбор"
             status_lines.append(f"  • Мои локации: {CYAN}{selected_text}{NC}")
-            status_lines.append(f"  • Источники категорий: {GREEN}{supported_providers} готовы{NC}, {len(providers) - supported_providers} пропущено")
+            status_lines.append("  • Категории берутся из каталога HYDRA, а не из конфигурации")
             if count > 1:
                 status_lines.append("  • Доступен автоматический выбор самой быстрой локации")
             status_lines.append("")
@@ -807,15 +808,11 @@ def _menu_geo_profiles(state: AppState, ps) -> None:
                     previous_source.unlink(missing_ok=True)
                 valid_targets = {"warp_ultimate", "warp_ultimate_auto"}
                 valid_targets.update(item["tag"] for item in bundle["endpoints"])
-                valid_yaml_keys = {
-                    f"yaml:{item['name']}" for item in bundle.get("rule_providers", [])
-                    if item.get("supported") and item.get("name")
-                }
                 for key, target in list(list_targets.items()):
                     if target.startswith("warp_ultimate_") and target not in valid_targets:
                         list_targets[key] = "none"
-                    if key.startswith("yaml:") and key not in valid_yaml_keys:
-                        list_targets[key] = "none"
+                    if key.startswith("yaml:"):
+                        list_targets.pop(key, None)
                 endpoint_tags = {item["tag"] for item in bundle["endpoints"]}
                 if ps.config.get("ultimate_selected_tag") not in endpoint_tags:
                     ps.config["ultimate_selected_tag"] = bundle["endpoints"][0]["tag"]
@@ -890,12 +887,12 @@ def _menu_geo_profiles(state: AppState, ps) -> None:
                 "",
                 f"  1. Скопируйте один .yaml/.yml в {WARP_CONFIGS_DIR}",
                 "     Имя файла произвольное: HYDRA обнаружит его автоматически.",
-                "  2. HYDRA автоматически извлечёт WARP-локации и категории.",
+                "  2. HYDRA извлечёт из файла только WARP-локации.",
                 "  3. Отметьте локации, которые хотите использовать.",
                 "  4. В «Категории и направления» выберите простой маршрут:",
                 "     например, «Обход блокировок → Нидерланды».",
-                "     Встроенные, загруженные и свои правила объединяются.",
-                "     Бинарные .mrs будут показаны как неподдерживаемые.",
+                "     Правила берутся из каталога HYDRA и своих списков.",
+                "     rule-providers и rules из YAML намеренно игнорируются.",
                 "     Clash TUN, DNS и listeners не импортируются.",
                 "  5. Правила действуют на всех интерфейсах HYDRA.",
                 "",
