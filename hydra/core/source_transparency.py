@@ -112,8 +112,17 @@ def _ensure_policy_rule() -> None:
             )
         else:
             raise RuntimeError(detail or f"cannot inspect route table {ROUTE_TABLE}")
-    expected_route = "local 0.0.0.0/0 dev lo"
-    if routes.stdout.strip() and expected_route not in routes.stdout:
+    route_lines = [line.strip() for line in routes.stdout.splitlines() if line.strip()]
+    # iproute2 renders the same all-IPv4 local route either as
+    # `local 0.0.0.0/0 dev lo` or `local default dev lo` depending on version.
+    # Accept only that single owned route; any additional/different entry means
+    # the numeric table was already used by the administrator or another app.
+    owned_routes = all(
+        line.startswith(("local 0.0.0.0/0 ", "local default "))
+        and " dev lo" in line
+        for line in route_lines
+    )
+    if route_lines and not owned_routes:
         raise RuntimeError(f"policy-routing table {ROUTE_TABLE} is already in use")
 
     added_rule = False

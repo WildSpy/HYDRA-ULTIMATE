@@ -68,6 +68,56 @@ def test_missing_numeric_fib_table_is_created():
     assert any(command[:4] == ["ip", "-4", "route", "replace"] for command in checked)
 
 
+def test_existing_owned_route_accepts_iproute_default_format():
+    checked = []
+
+    def fake_run(command, **kwargs):
+        if command[:4] == ["ip", "-4", "rule", "show"]:
+            return MagicMock(
+                returncode=0,
+                stdout=(
+                    f"{source.RULE_PRIORITY}: from all fwmark {source.FWMARK} "
+                    f"lookup {source.ROUTE_TABLE}\n"
+                ),
+                stderr="",
+            )
+        if command[:5] == ["ip", "-4", "route", "show", "table"]:
+            return MagicMock(
+                returncode=0,
+                stdout="local default dev lo scope host\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    with patch.object(source, "_run", side_effect=fake_run), \
+         patch.object(source, "_run_checked", side_effect=lambda command, **kwargs: checked.append(command) or MagicMock(returncode=0)):
+        source._ensure_policy_rule()
+
+    assert not any(command[:4] == ["ip", "-4", "rule", "add"] for command in checked)
+    assert any(command[:4] == ["ip", "-4", "route", "replace"] for command in checked)
+
+
+def test_foreign_route_in_policy_table_is_rejected():
+    def fake_run(command, **kwargs):
+        if command[:4] == ["ip", "-4", "rule", "show"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if command[:5] == ["ip", "-4", "route", "show", "table"]:
+            return MagicMock(
+                returncode=0,
+                stdout="default via 192.0.2.1 dev eth0\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    with patch.object(source, "_run", side_effect=fake_run):
+        try:
+            source._ensure_policy_rule()
+        except RuntimeError as exc:
+            assert "already in use" in str(exc)
+        else:
+            raise AssertionError("foreign route table was accepted")
+
+
 def test_clear_restores_baseline(tmp_path):
     sysctl_file = tmp_path / "sysctl.conf"
     state_file = tmp_path / "state.json"
