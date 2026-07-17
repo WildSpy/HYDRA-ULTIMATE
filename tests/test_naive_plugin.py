@@ -400,6 +400,56 @@ def test_generate_client_config_both():
     assert networks == {"tcp", "quic"}
 
 
+def test_set_transport_rejects_trusttunnel_quic_conflict_without_mutation():
+    """Конфликт UDP/443 отклоняется до apply/save и не меняет режим в TUI."""
+    p = NaivePlugin()
+    state = _make_state_with_network([], network="tcp")
+    state.protocols["trusttunnel"] = PluginState(
+        enabled=True,
+        config={"transport": "quic", "domain": "tt.example.com"},
+    )
+
+    with patch("hydra.core.state.save_state") as mock_save, \
+         patch("hydra.core.orchestrator.apply_config") as mock_apply:
+        assert p.set_transport(state, "quic") is False
+
+    assert state.protocols["naive"].config["network"] == "tcp"
+    mock_save.assert_not_called()
+    mock_apply.assert_not_called()
+
+
+def test_set_transport_rolls_back_state_and_runtime_when_apply_fails():
+    """Неуспешный apply восстанавливает прежний network и runtime."""
+    p = NaivePlugin()
+    state = _make_state_with_network([], network="tcp")
+
+    with patch("hydra.core.state.save_state") as mock_save, \
+         patch("hydra.core.orchestrator.apply_config", side_effect=[False, True]) as mock_apply, \
+         patch.object(p, "_sync_transport_firewall") as mock_firewall:
+        assert p.set_transport(state, "quic") is False
+
+    assert state.protocols["naive"].config["network"] == "tcp"
+    assert mock_apply.call_count == 2
+    mock_save.assert_called_once_with(state)
+    mock_firewall.assert_not_called()
+
+
+def test_set_transport_saves_only_after_successful_apply():
+    """Успешный режим сохраняется и только затем синхронизируется firewall."""
+    p = NaivePlugin()
+    state = _make_state_with_network([], network="tcp")
+
+    with patch("hydra.core.state.save_state") as mock_save, \
+         patch("hydra.core.orchestrator.apply_config", return_value=True) as mock_apply, \
+         patch.object(p, "_sync_transport_firewall") as mock_firewall:
+        assert p.set_transport(state, "quic") is True
+
+    assert state.protocols["naive"].config["network"] == "quic"
+    mock_apply.assert_called_once_with(state)
+    mock_save.assert_called_once_with(state)
+    mock_firewall.assert_called_once_with("tcp", "quic")
+
+
 def test_on_enable_opens_udp_for_quic():
     """on_enable() вызывает open_udp(443) при network=quic."""
     p = NaivePlugin()

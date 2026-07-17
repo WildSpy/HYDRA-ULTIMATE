@@ -761,41 +761,13 @@ def menu_plugin(state: AppState, p):
                 mode_map = {"1": "tcp", "2": "quic", "3": "both"}
                 new_mode = mode_map.get(mode_choice)
                 if new_mode:
-                    old_mode = ps.config.get("network", "tcp")
-                    ps.config["network"] = new_mode
-                    from hydra.core.state import save_state
-                    save_state(state)
-
-                    # Переоткрыть/закрыть UDP-порт и обновить iptables
-                    from hydra.utils.firewall import open_udp, close_udp
-                    if new_mode in ("quic", "both") and old_mode == "tcp":
-                        open_udp(443, "naive-quic")
-                        subprocess.run([
-                            "iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", "443",
-                            "-m", "comment", "--comment", "naive-rx-udp"
-                        ], capture_output=True)
-                        subprocess.run([
-                            "iptables", "-I", "OUTPUT", "1", "-p", "udp", "--sport", "443",
-                            "-m", "comment", "--comment", "naive-tx-udp"
-                        ], capture_output=True)
-                    elif new_mode == "tcp" and old_mode in ("quic", "both"):
-                        close_udp(443)
-                        p._remove_iptables_rules()
-                        # Re-add TCP accounting rules
-                        subprocess.run([
-                            "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", "443",
-                            "-m", "comment", "--comment", "naive-rx"
-                        ], capture_output=True)
-                        subprocess.run([
-                            "iptables", "-I", "OUTPUT", "1", "-p", "tcp", "--sport", "443",
-                            "-m", "comment", "--comment", "naive-tx"
-                        ], capture_output=True)
-
-                    try:
-                        orchestrator.apply_config(state)
+                    if p.set_transport(state, new_mode):
                         success(f"Транспорт изменён на {new_mode}")
-                    except Exception as e:
-                        error(f"Ошибка: {e}")
+                    else:
+                        error(
+                            "Не удалось применить транспорт. Возможно, UDP/443 уже "
+                            "занят TrustTunnel QUIC; прежний режим восстановлен."
+                        )
                     prompt("Нажмите Enter")
 
         elif choice == "8" and ps.installed:

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -274,6 +275,81 @@ class NaivePlugin(BasePlugin):
             links.append(f"naive+quic://{user_q}:{pass_q}@{domain}:{port}?security=tls&sni={sni_q}#{tag_q}")
 
         return links
+
+    def set_transport(self, state: AppState, network: str) -> bool:
+        """Транзакционно переключает TCP/QUIC и откатывает state/runtime при сбое."""
+        if network not in ("tcp", "quic", "both"):
+            return False
+
+        from hydra.core.state import get_protocol, save_state
+
+        ps = get_protocol(state, "naive")
+        old_config = copy.deepcopy(ps.config)
+        old_network = old_config.get("network", "tcp")
+        if network == old_network:
+            return True
+
+        ps.config["network"] = network
+        if network in ("quic", "both"):
+            try:
+                from hydra.core.sni_router import get_quic_owner
+                get_quic_owner(state, prospective="naive")
+            except ValueError:
+                ps.config = old_config
+                return False
+
+        if not ps.enabled:
+            save_state(state)
+            return True
+
+        from hydra.core.orchestrator import apply_config
+        try:
+            applied = apply_config(state)
+        except Exception:
+            applied = False
+
+        if applied:
+            save_state(state)
+            self._sync_transport_firewall(old_network, network)
+            return True
+
+        # apply_config() может сохранить state для внутренних миграций, поэтому
+        # прежнее значение обязательно записываем обратно и восстанавливаем runtime.
+        ps.config = old_config
+        save_state(state)
+        try:
+            apply_config(state)
+        except Exception:
+            pass
+        return False
+
+    def _sync_transport_firewall(self, old_network: str, network: str) -> None:
+        """Обновляет внешнее правило UDP и legacy accounting после успешного apply."""
+        from hydra.utils.firewall import open_udp, close_udp
+
+        if network in ("quic", "both"):
+            open_udp(DEFAULT_PORT, "naive-quic")
+        elif old_network in ("quic", "both"):
+            close_udp(DEFAULT_PORT)
+
+        self._remove_iptables_rules()
+        subprocess.run([
+            "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", str(DEFAULT_PORT),
+            "-m", "comment", "--comment", "naive-rx",
+        ], capture_output=True)
+        subprocess.run([
+            "iptables", "-I", "OUTPUT", "1", "-p", "tcp", "--sport", str(DEFAULT_PORT),
+            "-m", "comment", "--comment", "naive-tx",
+        ], capture_output=True)
+        if network in ("quic", "both"):
+            subprocess.run([
+                "iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", str(DEFAULT_PORT),
+                "-m", "comment", "--comment", "naive-rx-udp",
+            ], capture_output=True)
+            subprocess.run([
+                "iptables", "-I", "OUTPUT", "1", "-p", "udp", "--sport", str(DEFAULT_PORT),
+                "-m", "comment", "--comment", "naive-tx-udp",
+            ], capture_output=True)
 
     # ═════════════════════════════════════════════════════════════════════
     #  Статус / трафик
