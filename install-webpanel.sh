@@ -19,6 +19,11 @@ ok(){ echo -e "${GREEN}[+]${NC} $*"; }
 warn(){ echo -e "${YELLOW}[!]${NC} $*"; }
 err(){ echo -e "${RED}[x]${NC} $*" >&2; }
 
+# Форк, из которого докачивается сама панель, если её нет в установке HYDRA.
+# Можно переопределить: HYDRA_PANEL_REPO / HYDRA_PANEL_BRANCH.
+REPO_URL="${HYDRA_PANEL_REPO:-https://github.com/WildSpy/HYDRA-ULTIMATE}"
+BRANCH="${HYDRA_PANEL_BRANCH:-main}"
+
 # ── 1. Проверки ──────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then err "Запустите от root: sudo bash install-webpanel.sh"; exit 1; fi
 if ! command -v python3 >/dev/null 2>&1; then err "python3 не найден"; exit 1; fi
@@ -37,10 +42,38 @@ if [[ -z "$INSTALL_DIR" ]]; then
 fi
 ok "HYDRA найдена в: $INSTALL_DIR"
 
-# Проверяем импортируемость пакета webpanel
+# Докачивает пакет панели из форка в существующую установку HYDRA.
+# Копирует ТОЛЬКО hydra/services/webpanel и requirements-webpanel.txt —
+# остальная установка (state.json, плагины, sing-box) не затрагивается.
+fetch_webpanel() {
+  info "Загрузка пакета панели из ${REPO_URL} (ветка ${BRANCH})…"
+  command -v curl >/dev/null 2>&1 || { err "curl не найден"; return 1; }
+  command -v tar  >/dev/null 2>&1 || { err "tar не найден"; return 1; }
+  local tmp; tmp="$(mktemp -d)"
+  local url="${REPO_URL}/archive/refs/heads/${BRANCH}.tar.gz"
+  if ! curl -fsSL "$url" -o "$tmp/panel.tar.gz"; then
+    err "Не удалось скачать $url"; rm -rf "$tmp"; return 1
+  fi
+  tar -xzf "$tmp/panel.tar.gz" -C "$tmp" || { err "Ошибка распаковки"; rm -rf "$tmp"; return 1; }
+  local src; src="$(find "$tmp" -maxdepth 1 -type d -name 'HYDRA-ULTIMATE-*' | head -n1)"
+  if [[ -z "$src" || ! -d "$src/hydra/services/webpanel" ]]; then
+    err "В архиве нет hydra/services/webpanel (проверьте ветку ${BRANCH})"; rm -rf "$tmp"; return 1
+  fi
+  mkdir -p "$INSTALL_DIR/hydra/services"
+  cp -rf "$src/hydra/services/webpanel" "$INSTALL_DIR/hydra/services/"
+  [[ -f "$src/requirements-webpanel.txt" ]] && cp -f "$src/requirements-webpanel.txt" "$INSTALL_DIR/"
+  rm -rf "$tmp"
+  ok "Пакет панели скопирован в $INSTALL_DIR/hydra/services/webpanel"
+}
+
+# Проверяем импортируемость пакета webpanel; если его нет — докачиваем из форка.
 if ! PYTHONPATH="$INSTALL_DIR" python3 -c "import hydra.services.webpanel.server" 2>/dev/null; then
-  err "Пакет hydra.services.webpanel не импортируется. Обновите репозиторий HYDRA."
-  exit 1
+  warn "Пакет hydra.services.webpanel не найден — устанавливаю поверх оригинала."
+  fetch_webpanel || { err "Не удалось получить пакет панели."; exit 1; }
+  if ! PYTHONPATH="$INSTALL_DIR" python3 -c "import hydra.services.webpanel.server" 2>/dev/null; then
+    err "Пакет панели по-прежнему не импортируется. Проверьте версию Python (нужен 3.10+) и ветку."
+    exit 1
+  fi
 fi
 ok "Пакет веб-панели доступен"
 
