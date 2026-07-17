@@ -96,5 +96,26 @@ def test_static_path_traversal_blocked(app):
     assert st == 403
 
 
+def test_path_param_is_url_decoded(app, monkeypatch):
+    """Email в пути (%40 -> @) должен декодироваться перед передачей в обработчик."""
+    seen = {}
+
+    def fake_get_user(ctx):
+        seen["email"] = ctx.params["email"]
+        return {"email": ctx.params["email"]}
+
+    # подменяем обработчик маршрута GET /api/users/<email>
+    for r in app.routes:
+        if r.method == "GET" and r.pattern.pattern == r"^/api/users/(?P<email>[^/]+)$":
+            monkeypatch.setattr(r, "handler", fake_get_user)
+            break
+
+    token = _token(app)
+    status, payload = _call(app, "GET", "/api/users/wildspy24%40gmail.com",
+                            headers={"authorization": "Bearer " + token})
+    assert status == 200
+    assert seen["email"] == "wildspy24@gmail.com"
+
+
 def _token(app):
     return auth.issue_token(app.config, "admin")

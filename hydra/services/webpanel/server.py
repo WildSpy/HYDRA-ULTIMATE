@@ -122,7 +122,9 @@ class WebApp:
             path_exists = True
             if route.method == method:
                 matched = route
-                params = m.groupdict()
+                # URL-декодируем параметры пути (email c %40, IP, и т.п.)
+                params = {k: urllib.parse.unquote(v) if v is not None else v
+                          for k, v in m.groupdict().items()}
                 break
 
         if matched is None:
