@@ -186,6 +186,7 @@ HYDRA-ULTIMATE/
 │   │   ├── warp/               # Управление Cloudflare WARP
 │   │   └── wdtt/               # qWDTT-транспорт
 │   ├── services/               # Фоновые службы и агенты
+│   │   ├── webpanel/           # [webpanel](hydra/services/webpanel/) - Веб-панель управления (HTTP API + SPA)
 │   │   ├── subscriptions/      # [subscriptions](hydra/services/subscriptions/) - HTTP-сервер раздачи клиентских подписок
 │   │   ├── telegram/           # [telegram](hydra/services/telegram/) - Управляющий Telegram-бот (в разработке)
 │   │   ├── traffic.py          # [traffic.py](hydra/services/traffic.py) - Модуль агрегации трафика
@@ -241,6 +242,52 @@ sudo python3 main.py
 sudo hydra status
 journalctl -u sing-box -n 20 --no-pager
 ```
+
+---
+
+## 🖥️ Веб-панель управления
+
+В дополнение к TUI платформа включает **веб-панель** — она предоставляет доступ ко **всем** функциям управляющего скрипта через браузер: ядро и применение конфигурации, протоколы и их per-plugin мастера (обфускация AmneziaWG, пресеты Mieru, transport naive/TrustTunnel, telemt, qWDTT), пользователи (лимиты/TTL/блокировки/подписки/QR), Telegram-боты, мониторинг (трафик, подключения, логи, sync-агент, Clash API), безопасность (Fail2ban/IPBan/Honeypot), сетевые службы (DNSCrypt/WARP) и диагностику.
+
+Панель — **дополнительный компонент**: она устанавливается поверх уже готовой конфигурации, не изменяет существующие настройки и использует тот же `state.json` с общей блокировкой, что и TUI. Оба интерфейса можно применять взаимозаменяемо.
+
+### Установка веб-панели
+
+```bash
+# На сервере с уже установленной HYDRA:
+sudo bash /opt/hydra/install-webpanel.sh
+```
+
+Установщик:
+* найдёт каталог HYDRA (`/opt/hydra`), проверит зависимости;
+* запросит логин/пароль администратора (хранится как PBKDF2-хэш в `/var/lib/hydra/webpanel.json`);
+* предложит режим доступа — **localhost** (через SSH-туннель, по умолчанию) или **публичный HTTPS** с самоподписанным сертификатом;
+* зарегистрирует и запустит службу `hydra-webpanel`.
+
+### Доступ
+
+* **Локальный режим** (рекомендуется): панель слушает `127.0.0.1:8088`, вход через SSH-туннель:
+  ```bash
+  ssh -L 8088:127.0.0.1:8088 root@<server-ip>
+  # затем откройте http://127.0.0.1:8088
+  ```
+* **Публичный режим**: `https://<server-ip>:8088`, вход по логину/паролю.
+
+### Управление
+
+```bash
+systemctl status hydra-webpanel          # статус
+systemctl restart hydra-webpanel         # перезапуск
+journalctl -u hydra-webpanel -n 40       # логи
+
+# сменить пароль администратора
+python3 -m hydra.services.webpanel.auth set-password
+# изменить bind/порт/TLS
+python3 -m hydra.services.webpanel.auth configure --host 0.0.0.0 --port 8443 --tls
+```
+
+> [!IMPORTANT]
+> Панель работает с правами `root` (как и TUI) и управляет всей инфраструктурой. Не открывайте её в интернет без необходимости — предпочтителен доступ через SSH-туннель. Панель написана на стандартной библиотеке Python (без внешних веб-фреймворков); опциональные `qrcode` и `psutil` улучшают QR-коды и метрики.
 
 ---
 
