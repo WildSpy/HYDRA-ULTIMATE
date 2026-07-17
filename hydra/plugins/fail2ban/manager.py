@@ -337,7 +337,6 @@ def menu_fail2ban(state: AppState, plugin) -> None:
                 status_lines.append(f"  Система:     {YELLOW}{len(active_systems)}{NC} ({', '.join(active_systems)})")
                 
             status_lines.append(f"  Забанено:    {(RED if total_banned else DIM)}{total_banned}{NC} IP (сейчас)")
-            status_lines.append(f"  {DIM}Mieru: auth-jail отключён — ядро не журналирует IP ошибки ключа{NC}")
             
         panel("🛡️ FAIL2BAN — ЗАЩИТА ОТ ПЕРЕБОРА", status_lines)
         
@@ -359,7 +358,7 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             options.append(("9", "📊 История банов за сутки", "Просмотр накопленной статистики"))
             options.append(("W", f"⚪ Управление whitelist {DIM}({len(wl)} IP){NC}", "Список IP-адресов/подсетей-исключений"))
             options.append(("-", "", ""))
-            options.append(("X", "🧹 Очистить лог Fail2ban", "Безопасное усечение (copytruncate) файлов лога"))
+            options.append(("X", "🧹 Очистить лог Fail2ban", ""))
             
         options.append(("0", "↩ Назад", ""))
         
