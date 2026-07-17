@@ -1,6 +1,6 @@
-# 🐙 HYDRA v2.3.5 — Multi-Protocol Proxy & Routing Orchestrator
+# 🐙 HYDRA v2.4.0 — Multi-Protocol Proxy & Routing Orchestrator
 
-[![Version](https://img.shields.io/badge/version-2.3.5-blue.svg?style=flat-square)](https://github.com/gr33nimax/HYDRA-ULTIMATE)
+[![Version](https://img.shields.io/badge/version-2.4.0-blue.svg?style=flat-square)](https://github.com/WildSpy/HYDRA-ULTIMATE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg?style=flat-square)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-lightgrey.svg?style=flat-square)](https://ubuntu.com/)
@@ -217,7 +217,7 @@ HYDRA-ULTIMATE/
 ### Быстрая установка (Рекомендуется)
 Для автоматической установки сетевого стека, Caddy L4, Sing-Box Extended и создания символических ссылок выполните:
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/main/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/WildSpy/HYDRA-ULTIMATE/main/bootstrap.sh)
 ```
 *Скрипт автоматически установит необходимые зависимости, настроит systemd-службы и скомпилирует caddy-l4 с нужными модулями.*
 
@@ -225,7 +225,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/mai
 Если вы хотите развернуть проект вручную из исходного кода:
 ```bash
 # Клонирование репозитория в директорию по умолчанию
-git clone https://github.com/gr33nimax/HYDRA-ULTIMATE /opt/hydra
+git clone https://github.com/WildSpy/HYDRA-ULTIMATE /opt/hydra
 cd /opt/hydra
 
 # Запуск панели управления (требуется Python 3.10+)
@@ -253,13 +253,22 @@ journalctl -u sing-box -n 20 --no-pager
 
 ### Установка веб-панели
 
+Панель можно поставить поверх **любой** установки HYDRA — в том числе оригинальной (`gr33nimax`), где пакета панели ещё нет: установщик сам докачает `webpanel` из форка и положит его в существующий `/opt/hydra`, не трогая остальное.
+
 ```bash
-# На сервере с уже установленной HYDRA:
+# Универсально (докачает панель из форка WildSpy/HYDRA-ULTIMATE):
+bash <(curl -fsSL https://raw.githubusercontent.com/WildSpy/HYDRA-ULTIMATE/main/install-webpanel.sh)
+
+# Или, если репозиторий форка уже склонирован в /opt/hydra:
 sudo bash /opt/hydra/install-webpanel.sh
 ```
 
+> Источник панели и ветку можно переопределить переменными окружения:
+> `HYDRA_PANEL_REPO=https://github.com/USER/REPO HYDRA_PANEL_BRANCH=main bash install-webpanel.sh`
+
 Установщик:
-* найдёт каталог HYDRA (`/opt/hydra`), проверит зависимости;
+* найдёт каталог HYDRA (`/opt/hydra`), при отсутствии пакета панели — докачает его из форка;
+* проверит зависимости;
 * запросит логин/пароль администратора (хранится как PBKDF2-хэш в `/var/lib/hydra/webpanel.json`);
 * предложит режим доступа — **localhost** (через SSH-туннель, по умолчанию) или **публичный HTTPS** с самоподписанным сертификатом;
 * зарегистрирует и запустит службу `hydra-webpanel`.
@@ -297,7 +306,7 @@ python3 -m hydra.services.webpanel.auth configure --host 0.0.0.0 --port 8443 --t
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/gr33nimax/HYDRA-ULTIMATE.git
+   git clone https://github.com/WildSpy/HYDRA-ULTIMATE.git
    cd HYDRA-ULTIMATE
    ```
 2. Установите pytest:
@@ -318,6 +327,13 @@ python3 -m hydra.services.webpanel.auth configure --host 0.0.0.0 --port 8443 --t
 ---
 
 ## 📜 История изменений (Changelog)
+
+### [2.4.0] — 18.07.2026
+
+| Компонент | Описание изменений |
+| :--- | :--- |
+| **Веб-панель** | Добавлена веб-панель управления (`hydra.services.webpanel`) с полным паритетом функций TUI: HTTP API на стандартной библиотеке + SPA. Устанавливается дополнительно поверх готовой инсталляции через `install-webpanel.sh` (в т.ч. на оригинальную установку — панель докачивается из форка). |
+| **Форк** | Обновлены ссылки репозитория на форк [WildSpy/HYDRA-ULTIMATE](https://github.com/WildSpy/HYDRA-ULTIMATE). |
 
 ### [2.3.5] — 17.07.2026
 

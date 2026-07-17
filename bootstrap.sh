@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# HYDRA v2.3.5 — Bootstrap Installer
+# HYDRA v2.4.0 — Bootstrap Installer
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Установка:
-#   curl -fsSL https://raw.githubusercontent.com/gr33nimax/HYDRA-ULTIMATE/main/bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/WildSpy/HYDRA-ULTIMATE/main/bootstrap.sh | sudo bash
 #
 # Что делает:
 #   1. Проверяет root, ОС (Ubuntu/Debian), Python 3.10+
@@ -139,7 +139,7 @@ fi
 # ── [4/5] Клонирование / обновление ─────────────────────────────────────────
 echo -e "\n${BOLD}[4/5] Загрузка HYDRA${NC}"
 INSTALL_DIR="/opt/hydra"
-REPO_URL="https://github.com/gr33nimax/HYDRA-ULTIMATE"
+REPO_URL="https://github.com/WildSpy/HYDRA-ULTIMATE"
 BRANCH="main"
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
