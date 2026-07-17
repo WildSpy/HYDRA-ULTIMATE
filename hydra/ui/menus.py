@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hydra.core.state import (
-    AppState, User, save_state, find_user, get_protocol,
+    AppState, User, save_state, load_state, update_state, find_user, get_protocol,
 )
 from hydra.core.singbox import (
     install as install_singbox,
@@ -34,7 +34,9 @@ from hydra.plugins.base import PluginCategory
 from hydra.core.systemd import install_service, install_timer, remove_unit
 from hydra.core import orchestrator
 from hydra.services.subscriptions.generator import get_subscription_url
-from hydra.services.traffic import collect_traffic, update_user_traffic
+from hydra.services.traffic import (
+    collect_traffic, update_user_traffic, refresh_traffic_state, protocol_totals,
+)
 from hydra.ui.tui import (
     clear, title, info, success, warn, error, menu, prompt, panel, kv,
     confirm, _bytes_auto, _bar, _ok,
@@ -274,7 +276,7 @@ def _select_user(state: AppState, prompt_text: str = "") -> User | None:
     for i, u in enumerate(state.users, 1):
         ico = f"{RED}🔴{NC}" if u.blocked else f"{GREEN}🟢{NC}"
         used = _bytes_auto(u.traffic_used_bytes)
-        lim = f"{u.traffic_limit_gb} GB" if u.traffic_limit_gb else "∞"
+        lim = f"{u.traffic_limit_gb} GiB" if u.traffic_limit_gb else "∞"
         ttl = u.expiry_date[:10] if u.expiry_date else "∞"
         print(f"  {i}. {ico} {BOLD}{u.email:<24}{NC}  {used} / {lim}  TTL: {ttl}")
     print()
@@ -310,7 +312,7 @@ def _show_user_detail(state: AppState, user: User):
     panel(f"Пользователь {user.email}", [
         kv("Статус:", f"{'ЗАБЛОКИРОВАН' if user.blocked else 'АКТИВЕН'}"),
         kv("UUID:", user.uuid),
-        kv("Трафик:", f"{_bytes_auto(used)} / {user.traffic_limit_gb or '∞'} GB"),
+        kv("Трафик:", f"{_bytes_auto(used)} / " + (f"{user.traffic_limit_gb} GiB" if user.traffic_limit_gb else "∞")),
         *([kv("Прогресс:", _bar(used, lim))] if user.traffic_limit_gb else []),
         kv("TTL:", user.expiry_date[:10] if user.expiry_date else "∞"),
         kv("Создан:", user.created_at[:10] if user.created_at else "—"),
@@ -374,21 +376,26 @@ def _user_links(state: AppState, user: User):
             continue
 
         conf = ""
-        link = ""
+        links = []
         try:
             conf = p.generate_client_config(user, state) or ""
         except Exception:
             pass
         try:
-            link = p.client_link(user, state) or ""
+            if hasattr(p, "client_links"):
+                links = p.client_links(user, state)
+            else:
+                l = p.client_link(user, state)
+                if l:
+                    links = [l]
         except Exception:
             pass
-        if not conf and not link:
+        if not conf and not links:
             continue
         print(f"  {CYAN}── {BOLD}{p.meta.name}{NC}{CYAN}{'─' * (PANEL_W - 10 - len(p.meta.name))}{NC}")
-        if link:
-            print(f"  {GREEN}Ссылка:{NC}  {link}")
-            pass
+        if links:
+            for l in links:
+                print(f"  {GREEN}Ссылка:{NC}  {l}")
         if conf:
             print(f"  {DIM}{'─' * PANEL_W}{NC}")
             for line in conf.splitlines():
@@ -628,6 +635,9 @@ def menu_plugin(state: AppState, p):
     if p.meta.name == "mieru":
         _menu_mieru(state, p)
         return
+    if p.meta.name == "trusttunnel":
+        _menu_trusttunnel(state, p)
+        return
     if p.meta.name == "dnscrypt":
         from hydra.plugins.dnscrypt.manager import menu_dnscrypt
         menu_dnscrypt(state, p)
@@ -696,6 +706,12 @@ def menu_plugin(state: AppState, p):
             if p.meta.category == PluginCategory.TRANSPORT and ps.enabled:
                 options.append(("2", "👥 Клиенты", "Подключённые клиенты и трафик"))
             
+            # Для NaiveProxy — пункт смены транспорта
+            if p.meta.name == "naive" and ps.enabled:
+                current_net = ps.config.get("network", "tcp") if ps.config else "tcp"
+                net_label = {"tcp": "HTTP/2", "quic": "QUIC", "both": "HTTP/2+QUIC"}.get(current_net, current_net)
+                options.append(("3", "🔀 Сменить транспорт", f"Текущий: {net_label}"))
+
             options.append(("8", "🔄 Переустановить", "Переустановка протокола"))
             options.append(("9", "❌ Удалить", "Полное удаление"))
         
@@ -736,6 +752,26 @@ def menu_plugin(state: AppState, p):
         elif choice == "2" and ps.installed and ps.enabled:
             _show_plugin_clients(state, p)
         
+        elif choice == "3" and p.meta.name == "naive" and ps.enabled:
+            mode_choice = menu([
+                ("1", "HTTP/2 (TCP)", "Стандартный режим, максимальная совместимость"),
+                ("2", "QUIC (UDP)", "HTTP/3 через UDP, может быть быстрее"),
+                ("3", "HTTP/2 + QUIC", "Оба транспорта одновременно"),
+                ("0", "↩ Отмена", ""),
+            ], header="Транспорт NaiveProxy")
+            if mode_choice != "0":
+                mode_map = {"1": "tcp", "2": "quic", "3": "both"}
+                new_mode = mode_map.get(mode_choice)
+                if new_mode:
+                    if p.set_transport(state, new_mode):
+                        success(f"Транспорт изменён на {new_mode}")
+                    else:
+                        error(
+                            "Не удалось применить транспорт. Возможно, UDP/443 уже "
+                            "занят TrustTunnel QUIC; прежний режим восстановлен."
+                        )
+                    prompt("Нажмите Enter")
+
         elif choice == "8" and ps.installed:
             if confirm("Переустановить?", default=False):
                 orchestrator.uninstall_plugin(state, p.meta.name)
@@ -887,7 +923,7 @@ def _user_detail_menu(state: AppState, user: User):
         # Панель информации о пользователе
         status_icon = f"{GREEN}🟢{NC}" if not user.blocked else f"{RED}🔴{NC}"
         sub_url = get_subscription_url(user, state)
-        lim_str = f"{user.traffic_limit_gb} GB" if user.traffic_limit_gb else "∞"
+        lim_str = f"{user.traffic_limit_gb} GiB" if user.traffic_limit_gb else "∞"
         ttl_str = user.expiry_date[:10] if user.expiry_date else "∞"
         lines = [
             f"  Email:    {status_icon} {user.email}",
@@ -925,7 +961,7 @@ def _user_detail_menu(state: AppState, user: User):
         choice = menu([
             ("1", "📄 Конфиги и ссылки", "Показать конфиги всех протоколов"),
             ("2", f"🔒🔓 {block_label}", "Переключить статус блокировки"),
-            ("3", "📝 Изменить лимит трафика", "Задать квоту трафика в GB"),
+            ("3", "📝 Изменить лимит трафика", "Задать квоту трафика в GiB"),
             ("4", "⏳ Изменить срок действия подписки", "Задать дату окончания TTL"),
             ("5", "❌ Удалить", "Удалить пользователя"),
             ("0", "↩ Назад", ""),
@@ -936,16 +972,16 @@ def _user_detail_menu(state: AppState, user: User):
         elif choice == "2":
             _toggle_block(state, user)
         elif choice == "3":
-            new_lim = prompt("Введите лимит трафика в GB (0 или пусто для безлимита)", default=str(user.traffic_limit_gb or ""))
+            new_lim = prompt("Введите лимит трафика в GiB (0 или пусто для безлимита)", default=str(user.traffic_limit_gb or ""))
             try:
                 val = float(new_lim) if new_lim.strip() else 0.0
                 user.traffic_limit_gb = val
                 save_state(state)
-                success(f"Лимит трафика для {user.email} установлен в {val or '∞'} GB")
+                success(f"Лимит трафика для {user.email} установлен в {val or '∞'} GiB")
                 
                 # Если пользователь был заблокирован, проверяем возможность авторазблокировки
                 limit_bytes = int(val * 1073741824) if val else 0
-                if user.blocked and (limit_bytes == 0 or user.traffic_used_bytes <= limit_bytes):
+                if user.blocked and (limit_bytes == 0 or user.traffic_used_bytes < limit_bytes):
                     is_expired = False
                     if user.expiry_date:
                         try:
@@ -984,7 +1020,7 @@ def _user_detail_menu(state: AppState, user: User):
             # Авторазблокировка при соответствии лимитам
             if user.blocked:
                 limit_bytes = int(user.traffic_limit_gb * 1073741824) if user.traffic_limit_gb else 0
-                is_traffic_exceeded = limit_bytes > 0 and user.traffic_used_bytes > limit_bytes
+                is_traffic_exceeded = limit_bytes > 0 and user.traffic_used_bytes >= limit_bytes
                 is_expired = False
                 if user.expiry_date:
                     try:
@@ -1232,10 +1268,15 @@ def _user_configs(state: AppState, user: User):
         return
     
     for p in enabled_transports:
-        # Ссылка
-        link = ""
+        # Ссылки
+        links = []
         try:
-            link = p.client_link(user, state)
+            if hasattr(p, "client_links"):
+                links = p.client_links(user, state)
+            else:
+                l = p.client_link(user, state)
+                if l:
+                    links = [l]
         except Exception:
             pass
             
@@ -1339,12 +1380,16 @@ def _user_configs(state: AppState, user: User):
                 box_lines = []
                 
                 # Показываем ссылку, если она есть
-                if link:
-                    box_lines.append(f"{YELLOW}{BOLD}Ссылка для подключения (URL):{NC}")
+                if links:
+                    label = "Ссылки для подключения (URL):" if len(links) > 1 else "Ссылка для подключения (URL):"
+                    box_lines.append(f"{YELLOW}{BOLD}{label}{NC}")
                     # Оборачиваем ссылку по ширине коробки (PANEL_W - 6)
                     link_width = PANEL_W - 6
-                    for chunk in [link[i:i+link_width] for i in range(0, len(link), link_width)]:
-                        box_lines.append(f"  {CYAN}{chunk}{NC}")
+                    for idx, l in enumerate(links):
+                        if idx > 0:
+                            box_lines.append(f"  {DIM}{'┄' * (PANEL_W - 8)}{NC}")
+                        for chunk in [l[i:i+link_width] for i in range(0, len(l), link_width)]:
+                            box_lines.append(f"  {CYAN}{chunk}{NC}")
                     box_lines.append(f"{DIM}{'─' * (PANEL_W - 4)}{NC}")
                 
                 # Показываем конфиг
@@ -1544,6 +1589,8 @@ WantedBy=multi-user.target
 #  5. Мониторинг
 # ═════════════════════════════════════════════════════════════════════════════
 
+_MONITORING_EXCLUDED_PROTOCOLS = frozenset({"wdtt"})
+
 def _is_enter_pressed() -> bool:
     import select
     import os
@@ -1564,6 +1611,7 @@ def _is_enter_pressed() -> bool:
 
 def menu_monitoring(state: AppState):
     while True:
+        state = load_state()
         clear()
         
         # Сбор быстрых системных метрик для панели
@@ -1581,21 +1629,32 @@ def menu_monitoring(state: AppState):
             except Exception:
                 pass
                 
-        active_protos = [p for p in state.protocols.values() if p.enabled]
+        active_protos = [
+            p for name, p in state.protocols.items()
+            if p.enabled and name not in _MONITORING_EXCLUDED_PROTOCOLS
+        ]
         protos_count = len(active_protos)
+        running_count = 0
+        for plugin in enabled(state, PluginCategory.TRANSPORT):
+            if plugin.meta.name in _MONITORING_EXCLUDED_PROTOCOLS:
+                continue
+            try:
+                running_count += int(plugin.status().running)
+            except Exception:
+                pass
         users_count = len(state.users)
         
         lines = [
             f"  📋 {BOLD}Сводный мониторинг и управление лимитами трафика{NC}",
             "────────────────────────────────────────────────────────",
-            f"  🔌 {BOLD}Активные протоколы:{NC} {GREEN}{protos_count:<3}{NC} │  👥 {BOLD}Всего клиентов:{NC} {CYAN}{users_count}{NC}",
+            f"  🔌 {BOLD}Работают протоколы:{NC} {GREEN}{running_count}/{protos_count:<3}{NC} │  👥 {BOLD}Учётных записей:{NC} {CYAN}{users_count}{NC}",
             f"  🚀 {BOLD}Нагрузка Load Avg:{NC}   {YELLOW}{load_str:<3}{NC} │  💾 {BOLD}Память RAM:{NC}     {RED}{ram_str}{NC}"
         ]
         panel("💻  Мониторинг системы", lines)
 
         choice = menu(
             [("1", "📊 Потребление трафика", "Сводная статистика по протоколам и пользователям"),
-             ("2", "🔌 Активные подключения", "Сессии пользователей в реальном времени"),
+             ("2", "🔌 Подключения и активность", "Активные сессии и недавние запросы пользователей"),
              ("3", "📈 Живой монитор CPU/RAM", "Нагрузка системы, скорость сети и метрики"),
              ("4", "🔧 Сервисные настройки", "Управление Clash API, Sync Agent, системные логи"),
              ("0", "↩ Назад", "")],
@@ -1615,6 +1674,7 @@ def menu_monitoring(state: AppState):
 
 def _menu_service_settings(state: AppState):
     while True:
+        state = load_state()
         clear()
         choice = menu([
             ("1", "📋 Просмотр системных логов", "Sing-Box, Sync-Agent, Fail2ban и др."),
@@ -1640,47 +1700,37 @@ def _show_traffic_combined(state: AppState):
         title("📊 Потребление трафика")
         print()
         
-        # 1. Выводим трафик по протоколам
-        from hydra.plugins.registry import get as get_plugin
-        
-        awg_traffic = 0
-        p_awg = get_plugin("amneziawg")
-        if p_awg:
-            try:
-                awg_traffic = sum(p_awg.traffic(state).values())
-            except Exception:
-                pass
-                
-        naive_traffic = 0
-        p_naive = get_plugin("naive")
-        if p_naive:
-            try:
-                naive_traffic = sum(p_naive.traffic(state).values())
-            except Exception:
-                pass
-                
-        anytls_traffic = 0
-        for u in state.users:
-            anytls_traffic += u.credentials.get("anytls", {}).get("traffic_used_bytes", 0)
-            
-        mieru_traffic = 0
-        for u in state.users:
-            mieru_traffic += u.credentials.get("mieru", {}).get("traffic_used_bytes", 0)
-
-        trusttunnel_traffic = 0
-        for u in state.users:
-            trusttunnel_traffic += u.credentials.get("trusttunnel", {}).get("traffic_used_bytes", 0)
-            
-        total_traffic = awg_traffic + naive_traffic + anytls_traffic + mieru_traffic + trusttunnel_traffic
+        # Refresh from the latest on-disk state. This avoids overwriting daemon
+        # increments with the stale object that opened the main menu.
+        state = refresh_traffic_state()
+        by_protocol = protocol_totals(state)
+        enabled_names = {
+            plugin.meta.name for plugin in enabled(state, PluginCategory.TRANSPORT)
+            if plugin.meta.name not in _MONITORING_EXCLUDED_PROTOCOLS
+        }
+        labels = {
+            "amneziawg": "AmneziaWG", "naive": "NaiveProxy",
+            "anytls": "AnyTLS", "mieru": "Mieru",
+            "trusttunnel": "TrustTunnel", "telemt": "Telemt",
+        }
+        by_protocol = {
+            name: value for name, value in by_protocol.items()
+            if name not in _MONITORING_EXCLUDED_PROTOCOLS
+        }
+        order = ["amneziawg", "naive", "anytls", "mieru", "trusttunnel", "telemt"]
+        names = [name for name in order if name in enabled_names or by_protocol.get(name, 0)]
+        names.extend(sorted(set(by_protocol) - set(names)))
+        distributed = sum(by_protocol.values())
+        total_traffic = sum(user.traffic_used_bytes for user in state.users)
         
         print(f"  {BOLD}Трафик по протоколам:{NC}")
-        print(f"  {BOLD}{'Протокол':<15} {'Потребление':<20}{NC}")
+        print(f"  {BOLD}{'Протокол':<18} {'Накоплено':<20} {'Состояние':<12}{NC}")
         print(f"  {DIM}{'─' * 38}{NC}")
-        print(f"  AmneziaWG       {GREEN}{_bytes_auto(awg_traffic):<20}{NC}")
-        print(f"  NaiveProxy      {GREEN}{_bytes_auto(naive_traffic):<20}{NC}")
-        print(f"  AnyTLS          {GREEN}{_bytes_auto(anytls_traffic):<20}{NC}")
-        print(f"  Mieru           {GREEN}{_bytes_auto(mieru_traffic):<20}{NC}")
-        print(f"  TrustTunnel     {GREEN}{_bytes_auto(trusttunnel_traffic):<20}{NC}")
+        for name in names:
+            status = f"{GREEN}включён{NC}" if name in enabled_names else f"{DIM}история{NC}"
+            print(f"  {labels.get(name, name):<18} {GREEN}{_bytes_auto(by_protocol.get(name, 0)):<20}{NC} {status}")
+        if total_traffic > distributed:
+            print(f"  {'Старый/не распределён':<18} {YELLOW}{_bytes_auto(total_traffic - distributed):<20}{NC} {DIM}история{NC}")
         print(f"  {DIM}{'─' * 38}{NC}")
         print(f"  {BOLD}ИТОГО:          {CYAN}{_bytes_auto(total_traffic):<20}{NC}")
         print()
@@ -1689,7 +1739,6 @@ def _show_traffic_combined(state: AppState):
         print(f"  {BOLD}Потребление трафика по пользователям:{NC}")
         print()
         
-        update_user_traffic(state)
         users_sorted = list(state.users)
         if sort_by == "traffic":
             users_sorted.sort(key=lambda u: u.traffic_used_bytes, reverse=True)
@@ -1723,7 +1772,7 @@ def _show_traffic_combined(state: AppState):
                 except Exception:
                     expiry_str = u.expiry_date[:10]
             
-            lim_str = f"{u.traffic_limit_gb:.1f} GB" if u.traffic_limit_gb else "∞"
+            lim_str = f"{u.traffic_limit_gb:.1f} GiB" if u.traffic_limit_gb else "∞"
             print(f"  {i:<3d} {BOLD}{u.email:<25}{NC} {_bytes_auto(used):<15} {lim_str:<10} {status_str:<10} {expiry_str:<12}")
             
         print(f"  {DIM}{'─' * 77}{NC}")
@@ -1765,11 +1814,31 @@ def _show_connections(state: AppState):
     
     while True:
         clear()
-        title("🔌 Активные подключения")
+        title("🔌 Подключения и активность")
         print()
         
+        state = load_state()
         all_clients = []
+        from hydra.services.active_connections import tracked_active_connections
+        all_clients.extend(tracked_active_connections(state))
         for p in enabled(state, PluginCategory.TRANSPORT):
+            if p.meta.name in _MONITORING_EXCLUDED_PROTOCOLS:
+                continue
+            # These are represented by the attributed Clash API snapshot. ss
+            # sees only internal proxy legs and cannot identify their users.
+            if p.meta.name == "naive":
+                recent = getattr(p, "recent_connections", None)
+                if recent:
+                    try:
+                        for client in recent(state):
+                            row = dict(client)
+                            row["plugin"] = "naive"
+                            all_clients.append(row)
+                    except Exception:
+                        pass
+                continue
+            if p.meta.name in {"anytls", "mieru", "trusttunnel"}:
+                continue
             try:
                 try:
                     clients = p.connected_clients(state)
@@ -1777,20 +1846,29 @@ def _show_connections(state: AppState):
                     clients = p.connected_clients()
                     
                 for c in clients:
-                    c["plugin"] = p.meta.name
-                    all_clients.append(c)
+                    row = dict(c)
+                    row["plugin"] = p.meta.name
+                    all_clients.append(row)
             except Exception:
                 pass
+        all_clients.sort(key=lambda item: (
+            str(item.get("plugin", "")), str(item.get("email", "")).lower(),
+        ))
                 
         if not all_clients:
             print(f"  {YELLOW}Нет активных подключений в данный момент.{NC}")
             print()
         else:
-            print(f"  {BOLD}{'Протокол':<12} {'Пользователь / IP':<30} {'Трафик Rx/Tx':<20} {'Активность':<15}{NC}")
+            print(f"  {BOLD}{'Протокол':<12} {'Пользователь':<30} {'Rx / Tx':<20} {'Активность':<15}{NC}")
             print(f"  {DIM}{'─' * PANEL_W}{NC}")
             for c in all_clients:
                 plugin_name = c.get("plugin", "unknown")
                 email = c.get("email", "?")
+                profiles = c.get("profiles", [])
+                if profiles:
+                    email = f"{email} [{'/'.join(profiles)}]"
+                elif c.get("connections", 0) > 1:
+                    email = f"{email} ({c['connections']} сесс.)"
                 rx = c.get("rx", 0)
                 tx = c.get("tx", 0)
                 online = c.get("online", True)
@@ -1810,7 +1888,8 @@ def _show_connections(state: AppState):
                 elif online:
                     activity = "активен"
                     
-                status_ico = f"{GREEN}●{NC}" if online else f"{DIM}●{NC}"
+                recent = c.get("activity_kind") == "recent"
+                status_ico = f"{GREEN}●{NC}" if online else (f"{YELLOW}◐{NC}" if recent else f"{DIM}●{NC}")
                 traffic_str = f"{_bytes_auto(rx)} / {_bytes_auto(tx)}" if (rx or tx) else "—"
                 
                 email_disp = email
@@ -1819,11 +1898,18 @@ def _show_connections(state: AppState):
                     
                 print(f"  {plugin_name:<12} {status_ico} {BOLD}{email_disp:<28}{NC} {traffic_str:<20} {activity:<15}")
             print()
+            print(f"  {DIM}● Активно ◐ Активно (5 мин){NC}")
+
+        from hydra.services.active_connections import traffic_daemon_fresh
+        if not state.network.clash_api_enabled:
+            print(f"  {YELLOW}AnyTLS/Mieru/TrustTunnel не показаны: Clash API и демон статистики выключены.{NC}")
+        elif not traffic_daemon_fresh(state):
+            print(f"  {YELLOW}Данные Clash API устарели: проверьте службу hydra-traffic-daemon.{NC}")
             
         choice = menu([
             ("R", "🔄 Обновить список", ""),
             ("0", "↩ Назад", "")
-        ], "АКТИВНЫЕ ПОДКЛЮЧЕНИЯ")
+        ], "ПОДКЛЮЧЕНИЯ И АКТИВНОСТЬ")
         
         if choice == "0":
             break
@@ -1873,10 +1959,14 @@ def _read_proc_mem() -> tuple[int, int, float]:
                 if len(parts) >= 2:
                     meminfo[parts[0].rstrip(":")] = int(parts[1]) * 1024
         total = meminfo.get("MemTotal", 0)
-        free = meminfo.get("MemFree", 0)
-        buffers = meminfo.get("Buffers", 0)
-        cached = meminfo.get("Cached", 0)
-        used = total - free - buffers - cached
+        available = meminfo.get("MemAvailable", 0)
+        if not available:
+            available = (
+                meminfo.get("MemFree", 0) + meminfo.get("Buffers", 0)
+                + meminfo.get("Cached", 0) + meminfo.get("SReclaimable", 0)
+                - meminfo.get("Shmem", 0)
+            )
+        used = max(0, total - available)
         pct = (used / total) * 100 if total > 0 else 0.0
         return used, total, pct
     except Exception:
@@ -1888,12 +1978,22 @@ def _read_proc_net() -> tuple[int, int]:
     try:
         rx = 0
         tx = 0
+        default_ifaces: set[str] = set()
+        try:
+            with open("/proc/net/route", "r") as routes:
+                for route in routes.readlines()[1:]:
+                    fields = route.split()
+                    if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 2:
+                        default_ifaces.add(fields[0])
+        except Exception:
+            pass
         with open("/proc/net/dev", "r") as f:
             lines = f.readlines()
             for line in lines[2:]:
                 if ":" not in line:
                     continue
-                if "lo:" in line:
+                iface = line.split(":", 1)[0].strip()
+                if iface == "lo" or (default_ifaces and iface not in default_ifaces):
                     continue
                 parts = line.split(":", 1)[1].split()
                 if len(parts) >= 9:
@@ -1921,7 +2021,7 @@ def _show_realtime_sys_monitor():
 
     if has_psutil:
         try:
-            prev_net = psutil.net_io_counters()
+            prev_net = _read_proc_net()
         except Exception:
             prev_net = None
     else:
@@ -1951,13 +2051,13 @@ def _show_realtime_sys_monitor():
                 disk_str = f"{disk.percent:.1f}%  ({_bytes_auto(disk.used)} / {_bytes_auto(disk.total)})"
                 
                 try:
-                    curr_net = psutil.net_io_counters()
+                    curr_net = _read_proc_net()
                     now = time.time()
                     dt = now - last_time
                     if dt <= 0:
                         dt = 1.0
-                    rx_speed = (curr_net.bytes_recv - prev_net.bytes_recv) / dt
-                    tx_speed = (curr_net.bytes_sent - prev_net.bytes_sent) / dt
+                    rx_speed = (curr_net[0] - prev_net[0]) / dt
+                    tx_speed = (curr_net[1] - prev_net[1]) / dt
                     prev_net = curr_net
                     last_time = now
                 except Exception:
@@ -2219,6 +2319,7 @@ WantedBy=timers.target
 
 def _menu_clash_api(state: AppState):
     while True:
+        state = load_state()
         clear()
         
         enabled_status = getattr(state.network, "clash_api_enabled", False)
@@ -2233,7 +2334,7 @@ def _menu_clash_api(state: AppState):
         lines = [
             kv("Clash API:", f"{GREEN}включен 🟢{NC}" if enabled_status else f"{RED}выключен 🔴{NC}"),
             kv("Порт (localhost):", str(port)),
-            kv("Секретный ключ:", secret or "(не установлен)"),
+            kv("Секретный ключ:", "••••••••" if secret else "(не установлен)"),
             kv("Служба статистики:", f"{GREEN}активна 🟢{NC}" if daemon_active else f"{RED}не активна 🔴{NC}"),
         ]
         panel("Настройки Clash API", lines)
@@ -2248,8 +2349,7 @@ def _menu_clash_api(state: AppState):
         if choice == "0":
             break
         elif choice == "1":
-            state.network.clash_api_enabled = not enabled_status
-            save_state(state)
+            state, _ = update_state(lambda latest: setattr(latest.network, "clash_api_enabled", not enabled_status))
             info("Пересборка конфигурации Sing-Box...")
             from hydra.core.orchestrator import apply_config
             apply_config(state)
@@ -2259,8 +2359,7 @@ def _menu_clash_api(state: AppState):
             try:
                 new_port = int(prompt("Введите новый порт (1024-65535)", str(port)))
                 if 1024 <= new_port <= 65535:
-                    state.network.clash_api_port = new_port
-                    save_state(state)
+                    state, _ = update_state(lambda latest: setattr(latest.network, "clash_api_port", new_port))
                     info("Применение нового порта...")
                     from hydra.core.orchestrator import apply_config
                     apply_config(state)
@@ -2272,8 +2371,7 @@ def _menu_clash_api(state: AppState):
             prompt("Нажмите Enter")
         elif choice == "3":
             new_secret = prompt("Введите секретный ключ (пусто для сброса)", secret)
-            state.network.clash_api_secret = new_secret
-            save_state(state)
+            state, _ = update_state(lambda latest: setattr(latest.network, "clash_api_secret", new_secret))
             info("Применение ключа...")
             from hydra.core.orchestrator import apply_config
             apply_config(state)
@@ -2343,12 +2441,18 @@ def menu_security(state: AppState):
                 success("Все службы безопасности включены")
             prompt("Нажмите Enter")
         elif choice == "B":
+            errors = []
             for p in plugins_list:
                 try:
                     _toggle_security_plugin(state, p.meta.name, force_enable=False)
-                except Exception:
-                    pass
-            success("Все службы безопасности выключены")
+                except Exception as exc:
+                    errors.append(f"{p.meta.name}: {exc}")
+            if errors:
+                for err in errors:
+                    warn(err)
+                warn("Часть служб безопасности не удалось выключить")
+            else:
+                success("Все службы безопасности выключены")
             prompt("Нажмите Enter")
         else:
             try:
@@ -2361,16 +2465,13 @@ def menu_security(state: AppState):
 
 
 def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | None = None):
-    """Включает/выключает security-плагин через его on_enable/on_disable."""
+    """Toggle a security plugin through the transactional orchestrator."""
     from hydra.plugins.registry import get as get_plugin
     p = get_plugin(name)
     if not p:
         return
 
     proto = get_protocol(state, name)
-    enabled_val = False
-
-    # Determine target state
     if force_enable is True:
         target_enable = True
     elif force_enable is False:
@@ -2379,30 +2480,15 @@ def _toggle_security_plugin(state: AppState, name: str, force_enable: bool | Non
         target_enable = not (proto and proto.enabled)
 
     if target_enable:
-        # If not installed, install first
         if proto and not proto.installed:
             ok = orchestrator.install_plugin(state, name)
             if not ok:
                 raise RuntimeError(f"Не удалось установить плагин {name}")
-        p.on_enable(state)
-        if proto:
-            proto.enabled = True
-        enabled_val = True
+        if not orchestrator.enable(state, name):
+            raise RuntimeError(f"Не удалось включить плагин {name}")
     else:
-        p.on_disable(state)
-        if proto:
-            proto.enabled = False
-        enabled_val = False
-            
-    if name == "fail2ban":
-        state.security.fail2ban_enabled = enabled_val
-    elif name == "honeypot":
-        state.security.honeypot_enabled = enabled_val
-    elif name == "ipban":
-        state.security.ipban_enabled = enabled_val
-        
-    save_state(state)
-    orchestrator.apply_config(state)
+        if not orchestrator.disable(state, name):
+            raise RuntimeError(f"Не удалось выключить плагин {name}")
 
 
 def _menu_amneziawg(state: AppState, p):
@@ -2786,6 +2872,145 @@ def _menu_mieru_obfuscation(state: AppState, p):
                 else:
                     error("Не удалось применить пресет")
                 prompt("Нажмите Enter")
+
+
+def _menu_trusttunnel(state: AppState, p):
+    """Подменю управления TrustTunnel."""
+    from hydra.core.state import get_protocol
+
+    while True:
+        clear()
+        ps = get_protocol(state, p.meta.name)
+
+        # Статус
+        try:
+            st = p.status()
+            lines = [
+                f"  Статус:      {'🟢 Работает' if st.running else '🔴 Остановлен'}",
+                f"  Установлен:  {_ok(st.installed)}",
+                f"  Включён:     {_ok(st.enabled)}",
+            ]
+            if st.port:
+                lines.append(f"  Порт:        {st.port}")
+            domain = ps.config.get("domain", "") if ps.config else ""
+            if domain:
+                lines.append(f"  Домен:       {domain}")
+            transport = ps.config.get("transport", "tcp") if ps.config else "tcp"
+            transport_labels = {
+                "tcp": "HTTP/2 TCP",
+                "quic": "QUIC UDP (экспериментальный)",
+                "both": "HTTP/2 + QUIC (экспериментальный)",
+            }
+            lines.append(f"  Транспорт:   {transport_labels.get(transport, 'HTTP/2 TCP')}")
+            if st.info:
+                for k, v in st.info.items():
+                    lines.append(f"  {k}: {v}")
+            panel("🛡️ TRUSTTUNNEL CONTROL", lines)
+        except Exception:
+            panel("TRUSTTUNNEL CONTROL", ["  Статус недоступен"])
+        print()
+
+        options = []
+        if not ps.installed:
+            options.append(("1", "🔧 Установить", p.meta.description))
+        else:
+            if ps.enabled:
+                options.append(("1", "⏸️  Выключить", "Отключить протокол"))
+                options.append(("2", "👥 Клиенты", "Подключённые клиенты и трафик"))
+            else:
+                options.append(("1", "▶️  Включить", "Активировать протокол"))
+
+            options.append(("3", "🔄 Переустановить", "Переустановка протокола"))
+            options.append(("4", "❌ Удалить", "Полное удаление"))
+            options.append(("5", "🌐 Транспорт", "HTTP/2 TCP / QUIC UDP / оба"))
+
+        options.append(("0", "↩ Назад", ""))
+
+        choice = menu(options, "TRUSTTUNNEL")
+
+        if choice == "0":
+            break
+
+        elif choice == "1":
+            if not ps.installed:
+                info("Установка...")
+                ok = orchestrator.install_plugin(state, p.meta.name)
+                if ok:
+                    success("Установлено!")
+                    try:
+                        if orchestrator.enable(state, p.meta.name):
+                            success("Протокол включён и применён")
+                        else:
+                            error("Ошибка применения конфигурации")
+                    except Exception as e:
+                        error(f"Ошибка активации протокола: {e}")
+                else:
+                    error("Ошибка установки")
+            elif ps.enabled:
+                if orchestrator.disable(state, p.meta.name):
+                    success("Протокол выключен")
+                else:
+                    error("Ошибка применения конфигурации")
+            else:
+                try:
+                    if orchestrator.enable(state, p.meta.name):
+                        success("Протокол включён")
+                    else:
+                        error("Ошибка применения конфигурации")
+                except Exception as e:
+                    error(f"Ошибка активации протокола: {e}")
+            prompt("Нажмите Enter")
+
+        elif choice == "2" and ps.installed and ps.enabled:
+            _show_plugin_clients(state, p)
+
+        elif choice == "3" and ps.installed:
+            if confirm("Переустановить?", default=False):
+                orchestrator.uninstall_plugin(state, p.meta.name)
+                ok = orchestrator.install_plugin(state, p.meta.name)
+                if ok:
+                    try:
+                        orchestrator.enable(state, p.meta.name)
+                        success("Переустановлено!")
+                    except Exception as e:
+                        error(f"Ошибка активации: {e}")
+                else:
+                    error("Ошибка установки")
+                prompt("Нажмите Enter")
+
+        elif choice == "4" and ps.installed:
+            if confirm("Вы уверены, что хотите полностью удалить TrustTunnel?", default=False):
+                orchestrator.uninstall_plugin(state, p.meta.name)
+                success("Удалено")
+                prompt("Нажмите Enter")
+                return
+
+        elif choice == "5" and ps.installed:
+            current = ps.config.get("transport", "tcp")
+            mode_choice = menu([
+                ("1", "HTTP/2 TCP", "Стабильный режим по умолчанию"),
+                ("2", "QUIC UDP", "Экспериментальный HTTP/3 через Caddy UDP proxy"),
+                ("3", "HTTP/2 + QUIC", "Две клиентские ссылки"),
+                ("0", "Отмена", "Оставить текущий режим"),
+            ], "ТРАНСПОРТ TRUSTTUNNEL")
+            selected = {"1": "tcp", "2": "quic", "3": "both"}.get(mode_choice)
+            if selected is not None:
+                if selected == current:
+                    info("Этот транспорт уже выбран")
+                elif p.set_transport(state, selected):
+                    success("Транспорт изменён")
+                else:
+                    error(
+                        "Не удалось применить транспорт. Проверьте конфликт UDP/443, "
+                        "сертификат и журнал sing-box; прежняя конфигурация восстановлена."
+                    )
+                prompt("Нажмите Enter")
+
+
+
+
+
+
 
 
 def _awg_generate_wizard_menu(state: AppState, p):

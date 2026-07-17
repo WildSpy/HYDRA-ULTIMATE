@@ -7,17 +7,52 @@ hydra/core/state.py — Типизированное состояние прил
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import threading
+import copy
+from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, get_type_hints
+from typing import Callable, Optional, TypeVar, get_type_hints
 
 STATE_DIR = Path("/var/lib/hydra")
 STATE_FILE = STATE_DIR / "state.json"
 SCHEMA_VERSION = 2
 
 _lock = threading.Lock()
+T = TypeVar("T")
+
+
+@contextmanager
+def _state_lock():
+    """Serialize state access across both threads and HYDRA processes."""
+    with _lock:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        lock_path = STATE_DIR / "state.lock"
+        with lock_path.open("a+b") as lock_file:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -139,33 +174,97 @@ def _from_dict(cls, data: dict):
     return data
 
 
+def _load_state_unlocked() -> AppState:
+    if not STATE_FILE.exists():
+        return AppState()
+    try:
+        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        backup = STATE_FILE.with_suffix(".json.bak")
+        try:
+            raw = json.loads(backup.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            quarantine = STATE_FILE.with_suffix(".json.corrupt")
+            try:
+                shutil.copy2(STATE_FILE, quarantine)
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"State file is corrupt; recovery copy was saved to {quarantine}"
+            ) from exc
+
+    version = raw.get("version", 0)
+    if version < SCHEMA_VERSION:
+        raw = _migrate(raw, version)
+    return _from_dict(AppState, raw)
+
+
 def load_state() -> AppState:
     """Загружает состояние из state.json. Создаёт пустое, если файла нет."""
-    with _lock:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        if not STATE_FILE.exists():
-            return AppState()
+    with _state_lock():
+        return _load_state_unlocked()
 
-        try:
-            raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return AppState()
 
-        version = raw.get("version", 0)
-        if version < SCHEMA_VERSION:
-            raw = _migrate(raw, version)
-
-        return _from_dict(AppState, raw)
+def _save_state_unlocked(state: AppState) -> None:
+    data = _to_dict(state)
+    if STATE_FILE.exists():
+        shutil.copy2(STATE_FILE, STATE_FILE.with_suffix(".json.bak"))
+    tmp = STATE_DIR / f"state.json.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp.replace(STATE_FILE)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def save_state(state: AppState) -> None:
     """Сохраняет состояние в state.json (атомарно через temp-файл)."""
-    with _lock:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        data = _to_dict(state)
-        tmp = STATE_DIR / "state.json.tmp"
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=True), encoding="utf-8")
-        tmp.replace(STATE_FILE)
+    with _state_lock():
+        # Long-running menus hold an older AppState while the traffic daemon
+        # updates counters in another process. Preserve the monotonic runtime
+        # accounting fields instead of letting an unrelated settings save roll
+        # them back.
+        if STATE_FILE.exists():
+            latest = _load_state_unlocked()
+            latest_users = {user.email: user for user in latest.users}
+            for user in state.users:
+                current = latest_users.get(user.email)
+                if current is None:
+                    continue
+                user.traffic_used_bytes = max(
+                    int(user.traffic_used_bytes), int(current.traffic_used_bytes),
+                )
+                for protocol, current_stats in current.credentials.items():
+                    if not isinstance(current_stats, dict):
+                        continue
+                    target_stats = user.credentials.setdefault(protocol, {})
+                    current_total = int(current_stats.get("traffic_used_bytes", 0))
+                    target_total = int(target_stats.get("traffic_used_bytes", 0))
+                    if current_total >= target_total:
+                        target_stats["traffic_used_bytes"] = current_total
+                        if "traffic_last_raw_bytes" in current_stats:
+                            target_stats["traffic_last_raw_bytes"] = current_stats["traffic_last_raw_bytes"]
+                        for stat_key, stat_value in current_stats.items():
+                            if stat_key.startswith("traffic_") and stat_key not in {
+                                "traffic_used_bytes", "traffic_last_raw_bytes",
+                            }:
+                                target_stats[stat_key] = copy.deepcopy(stat_value)
+            for key in ("traffic_connection_counters", "traffic_log_cursors"):
+                if key in latest.install:
+                    state.install[key] = copy.deepcopy(latest.install[key])
+        _save_state_unlocked(state)
+
+
+def update_state(mutator: Callable[[AppState], T]) -> tuple[AppState, T]:
+    """Atomically load, mutate and save state under one process-wide lock."""
+    with _state_lock():
+        state = _load_state_unlocked()
+        result = mutator(state)
+        _save_state_unlocked(state)
+        return state, result
 
 
 def _migrate(data: dict, from_version: int) -> dict:

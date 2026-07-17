@@ -41,8 +41,10 @@ class DNSCryptPlugin(BasePlugin):
                 return False
 
         self._write_default_config()
-        subprocess.run(["systemctl", "enable", "--now", "dnscrypt-proxy"], capture_output=True)
-        return True
+        service = subprocess.run(
+            ["systemctl", "enable", "--now", "dnscrypt-proxy"], capture_output=True
+        )
+        return service.returncode == 0
 
     def uninstall(self) -> bool:
         subprocess.run(["systemctl", "stop", "dnscrypt-proxy"], capture_output=True)
@@ -96,6 +98,13 @@ use_syslog = true
     def status(self) -> PluginStatus:
         installed = self._installed()
         running = False
+        enabled = False
+        try:
+            from hydra.core.state import load_state
+            plugin_state = load_state().protocols.get(self.meta.name)
+            enabled = plugin_state.enabled if plugin_state else DNSCRYPT_CONF.exists()
+        except Exception:
+            enabled = DNSCRYPT_CONF.exists()
         if installed:
             r = subprocess.run(
                 ["systemctl", "is-active", "--quiet", "dnscrypt-proxy"],
@@ -104,7 +113,7 @@ use_syslog = true
 
         return PluginStatus(
             installed=installed,
-            enabled=bool(DNSCRYPT_CONF.exists()),
+            enabled=enabled,
             running=running,
             port=DNSCRYPT_PORT,
         )
@@ -119,7 +128,9 @@ use_syslog = true
     def on_enable(self, state: AppState) -> None:
         state.network.dnscrypt_enabled = True
         state.network.dnscrypt_port = DNSCRYPT_PORT
-        self._write_default_config()
+        # Не затираем выбранные пользователем server_names при каждом toggle.
+        if not DNSCRYPT_CONF.exists():
+            self._write_default_config()
         subprocess.run(["systemctl", "enable", "dnscrypt-proxy"], capture_output=True)
         subprocess.run(["systemctl", "start", "dnscrypt-proxy"], capture_output=True)
 

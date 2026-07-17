@@ -3,25 +3,24 @@ hydra/plugins/fail2ban/manager.py — TUI-консоль управления Fa
 """
 from __future__ import annotations
 
-import os
 import re
 import time
 import shutil
 import subprocess
-import configparser
 import ipaddress
 import urllib.request
 import json
 from pathlib import Path
-from typing import List, Tuple
 
 from hydra.core.state import AppState
 from hydra.ui.tui import (
     clear, menu, prompt, confirm, panel, info, success, warn, error,
-    RED, GREEN, YELLOW, CYAN, BLUE, MAGENTA, BOLD, DIM, WHITE, NC
+    RED, GREEN, YELLOW, CYAN, BOLD, DIM, NC
 )
 
 _F2B_LOG = Path("/var/log/fail2ban.log")
+_PROTOCOL_JAILS = ["hydra-awg"]
+_SYSTEM_JAILS = ["hydra-sshd", "hydra-recidive", "hydra-portscan"]
 
 _BAN_LINE_RE = re.compile(
     r'^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2}),\d+\s+'
@@ -171,69 +170,36 @@ def _f2b_unban_many(ips: list[str]) -> tuple[int, int]:
 
 
 # ── Работа с jail-файлами конфигурации ───────────────────────────────────────
-def _f2b_read_conf(jail_name: str) -> configparser.RawConfigParser:
-    cp = configparser.RawConfigParser()
-    cp.optionxform = str
-    path = Path(f"/etc/fail2ban/jail.d/{jail_name}.local")
-    if path.exists():
-        try:
-            cp.read(path, encoding="utf-8")
-        except Exception:
-            pass
-    if not cp.has_section(jail_name):
-        cp.add_section(jail_name)
-    return cp
-
-
-def _f2b_write_conf(jail_name: str, cp: configparser.RawConfigParser) -> bool:
-    if jail_name == "hydra-sshd":
-        if cp.has_section("hydra-sshd"):
-            if cp.has_option("hydra-sshd", "logpath"):
-                cp.remove_option("hydra-sshd", "logpath")
-            cp.set("hydra-sshd", "backend", "systemd")
-
-    path = Path(f"/etc/fail2ban/jail.d/{jail_name}.local")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("w", encoding="utf-8") as f:
-            cp.write(f)
-    except Exception:
-        return False
-    return _f2b_reload()
-
-
 def _portscan_add_log_rule():
-    # Игнорируем loopback и приватные подсети (чтобы VPN-клиенты и локальный трафик не банились)
-    for spec in (
-        ["-i", "lo"],
-        ["-s", "10.0.0.0/8"],
-        ["-s", "172.16.0.0/12"],
-        ["-s", "192.168.0.0/16"],
-        ["-s", "127.0.0.0/8"]
-    ):
-        subprocess.run([
-            "iptables", "-A", "INPUT"
-        ] + spec + [
-            "-m", "comment", "--comment", "hydra-portscan-ignore", "-j", "RETURN"
-        ], capture_output=True)
-
-    # Добавляем правило логирования в самый конец цепочки INPUT
-    subprocess.run([
-        "iptables", "-A", "INPUT", "-p", "tcp", "--syn",
+    # This is a per-source SYN-rate detector, not a generic log of every
+    # connection. The exact specification is also used for -C and -D.
+    spec = [
+        "-p", "tcp", "--syn",
+        "-m", "hashlimit", "--hashlimit-above", "15/minute",
+        "--hashlimit-burst", "15", "--hashlimit-mode", "srcip",
+        "--hashlimit-name", "hydra_portscan",
         "-m", "comment", "--comment", "hydra-portscan-log",
-        "-j", "LOG", "--log-prefix", "HYDRA-PORTSCAN ", "--log-level", "4"
-    ], capture_output=True)
+        "-j", "LOG", "--log-prefix", "HYDRA-PORTSCAN ", "--log-level", "4",
+    ]
+    check = subprocess.run(["iptables", "-C", "INPUT", *spec], capture_output=True)
+    if check.returncode != 0:
+        subprocess.run(["iptables", "-I", "INPUT", "1", *spec], capture_output=True)
 
 
 def _portscan_remove_log_rule():
-    r = subprocess.run(["iptables", "-S", "INPUT"], capture_output=True, text=True)
-    if r.returncode == 0:
-        for line in r.stdout.splitlines():
-            if "hydra-portscan" in line.lower() or "HYDRA-PORTSCAN" in line:
-                parts = line.split()
-                if parts[0] == "-A":
-                    parts[0] = "-D"
-                    subprocess.run(["iptables"] + parts, capture_output=True)
+    spec = [
+        "-p", "tcp", "--syn",
+        "-m", "hashlimit", "--hashlimit-above", "15/minute",
+        "--hashlimit-burst", "15", "--hashlimit-mode", "srcip",
+        "--hashlimit-name", "hydra_portscan",
+        "-m", "comment", "--comment", "hydra-portscan-log",
+        "-j", "LOG", "--log-prefix", "HYDRA-PORTSCAN ", "--log-level", "4",
+    ]
+    for _ in range(10):
+        check = subprocess.run(["iptables", "-C", "INPUT", *spec], capture_output=True)
+        if check.returncode != 0:
+            break
+        subprocess.run(["iptables", "-D", "INPUT", *spec], capture_output=True)
 
 
 # ── Селф-контейнед парсинг пользовательского ввода ───────────────────────────
@@ -341,12 +307,8 @@ def menu_fail2ban(state: AppState, plugin) -> None:
         active = _f2b_active() if installed else False
         live_jails = _f2b_list_jails() if active else []
         
-        # В гидре мы ориентируемся на джейлы hydra-anytls, hydra-mieru, hydra-trusttunnel, hydra-naive, hydra-awg, hydra-sshd, hydra-recidive, hydra-portscan
-        configured_jails = [
-            "hydra-anytls", "hydra-mieru", "hydra-trusttunnel",
-            "hydra-naive", "hydra-awg", "hydra-sshd",
-            "hydra-recidive", "hydra-portscan",
-        ]
+        # Hydra keeps only jails with trustworthy public source addresses.
+        configured_jails = _PROTOCOL_JAILS + _SYSTEM_JAILS
         jail_names = live_jails if live_jails else configured_jails
         
         total_banned = 0
@@ -361,16 +323,16 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             status_lines.append(f"  Статус:      {(GREEN+'● активен') if active else (DIM+'○ остановлен')}{NC}")
             
             # Группировка активных джейлов
-            active_proxies = []
+            active_protocols = []
             active_systems = []
             for j in jail_names:
-                if j in ["hydra-anytls", "hydra-mieru", "hydra-trusttunnel", "hydra-naive", "hydra-awg"]:
-                    active_proxies.append(j.replace("hydra-", ""))
+                if j in _PROTOCOL_JAILS:
+                    active_protocols.append(j.replace("hydra-", ""))
                 else:
                     active_systems.append(j.replace("hydra-", ""))
             
-            if active_proxies:
-                status_lines.append(f"  Прокси:      {CYAN}{len(active_proxies)}{NC} ({', '.join(active_proxies)})")
+            if active_protocols:
+                status_lines.append(f"  Протоколы:   {CYAN}{len(active_protocols)}{NC} ({', '.join(active_protocols)})")
             if active_systems:
                 status_lines.append(f"  Система:     {YELLOW}{len(active_systems)}{NC} ({', '.join(active_systems)})")
                 
@@ -396,7 +358,7 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             options.append(("9", "📊 История банов за сутки", "Просмотр накопленной статистики"))
             options.append(("W", f"⚪ Управление whitelist {DIM}({len(wl)} IP){NC}", "Список IP-адресов/подсетей-исключений"))
             options.append(("-", "", ""))
-            options.append(("X", "🧹 Очистить лог Fail2ban", "Безопасное усечение (copytruncate) файлов лога"))
+            options.append(("X", "🧹 Очистить лог Fail2ban", ""))
             
         options.append(("0", "↩ Назад", ""))
         
@@ -409,7 +371,23 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             if choice == "1":
                 info("Устанавливаю и настраиваю Fail2ban...")
                 if plugin.install():
-                    success("Fail2ban успешно установлен и запущен!")
+                    from hydra.core.state import get_protocol, save_state
+                    proto = get_protocol(state, "fail2ban")
+                    proto.installed = True
+                    proto.enabled = True
+                    state.security.fail2ban_enabled = True
+                    if plugin.apply(state):
+                        save_state(state)
+                        success("Fail2ban успешно установлен и запущен!")
+                    else:
+                        try:
+                            plugin.on_disable(state)
+                        except RuntimeError:
+                            pass
+                        proto.enabled = False
+                        state.security.fail2ban_enabled = False
+                        save_state(state)
+                        error("Fail2ban установлен, но конфигурация протокольных jail не применена.")
                 else:
                     error("Не удалось выполнить установку Fail2ban.")
                 prompt("Нажмите Enter для продолжения")
@@ -417,19 +395,33 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             
         # ── 1. Запуск/остановка службы ────────────────────────────────────────
         if choice == "1":
+            from hydra.core.state import get_protocol, save_state
+            proto = get_protocol(state, "fail2ban")
             if active:
                 info("Останавливаю Fail2ban...")
-                subprocess.run(["systemctl", "stop", "fail2ban"], capture_output=True)
+                try:
+                    plugin.on_disable(state)
+                except RuntimeError:
+                    pass
                 time.sleep(1)
                 if not _f2b_active():
+                    proto.enabled = False
+                    state.security.fail2ban_enabled = False
+                    save_state(state)
                     success("Служба остановлена.")
                 else:
                     error("Не удалось остановить службу.")
             else:
                 info("Запускаю Fail2ban...")
-                subprocess.run(["systemctl", "start", "fail2ban"], capture_output=True)
+                try:
+                    plugin.on_enable(state)
+                except RuntimeError:
+                    pass
                 time.sleep(2)
                 if _f2b_active():
+                    proto.enabled = True
+                    state.security.fail2ban_enabled = True
+                    save_state(state)
                     success("Служба запущена.")
                 else:
                     error("Служба не запустилась.")
@@ -437,11 +429,13 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             
         # ── 2. Reload / restart ───────────────────────────────────────────────
         elif choice == "2":
-            info("Перечитываю конфигурацию (reload)...")
-            if _f2b_reload():
+            info("Пересобираю и применяю конфигурацию...")
+            if plugin.apply(state):
+                from hydra.core.state import save_state
+                save_state(state)
                 success("Конфигурация успешно применена!")
             else:
-                error("Не удалось перезапустить Fail2ban. Проверьте: journalctl -u fail2ban")
+                error("Не удалось применить конфигурацию Fail2ban. Проверьте: journalctl -u fail2ban")
             prompt("Нажмите Enter для продолжения")
             
         # ── 3. Забаненные IP + разбан ─────────────────────────────────────────
@@ -545,13 +539,13 @@ def menu_fail2ban(state: AppState, plugin) -> None:
         elif choice == "5":
             clear()
             jail_opts = []
-            proxies = ["hydra-anytls", "hydra-mieru", "hydra-trusttunnel", "hydra-naive", "hydra-awg"]
-            systems = ["hydra-sshd", "hydra-recidive", "hydra-portscan"]
+            proxies = _PROTOCOL_JAILS
+            systems = _SYSTEM_JAILS
             all_jails = proxies + systems
             
             idx = 1
             for j in proxies:
-                jail_opts.append((str(idx), f"{CYAN}[Прокси]{NC} {j}", ""))
+                jail_opts.append((str(idx), f"{CYAN}[Протокол]{NC} {j}", ""))
                 idx += 1
             jail_opts.append(("-", "", ""))
             for j in systems:
@@ -564,10 +558,10 @@ def menu_fail2ban(state: AppState, plugin) -> None:
                 continue
             jail = all_jails[int(raw_j) - 1]
             
-            cp = _f2b_read_conf(jail)
-            cur_bt = cp.get(jail, "bantime", fallback="3600")
-            cur_ft = cp.get(jail, "findtime", fallback="600")
-            cur_mr = cp.get(jail, "maxretry", fallback="5")
+            current = plugin.jail_options(state).get(jail, {})
+            cur_bt = current.get("bantime", "3600")
+            cur_ft = current.get("findtime", "600")
+            cur_mr = current.get("maxretry", "5")
             
             clear()
             panel(f"⚙️ НАСТРОЙКА ДЖЕЙЛА {jail}", [
@@ -581,41 +575,42 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             new_ft = prompt("findtime, сек", default=cur_ft).strip()
             new_mr = prompt("maxretry", default=cur_mr).strip()
             
-            if not (new_bt.isdigit() and new_ft.isdigit() and new_mr.isdigit()):
-                error("Параметры должны быть целыми числами!")
+            if not (new_bt.isdigit() and new_ft.isdigit() and new_mr.isdigit()) or min(map(int, (new_bt, new_ft, new_mr))) < 1:
+                error("Параметры должны быть положительными целыми числами!")
                 prompt("Нажмите Enter...")
                 continue
                 
-            cp.set(jail, "bantime", new_bt)
-            cp.set(jail, "findtime", new_ft)
-            cp.set(jail, "maxretry", new_mr)
-            
+            from hydra.core.state import get_protocol, save_state
+            p_state = get_protocol(state, "fail2ban")
+            jail_config = p_state.config.setdefault("jails", {}).setdefault(jail, {})
+            previous = dict(jail_config)
+            jail_config.update({"bantime": new_bt, "findtime": new_ft, "maxretry": new_mr})
             info("Сохраняю настройки...")
-            if _f2b_write_conf(jail, cp):
+            if plugin.apply(state):
+                save_state(state)
                 success(f"Настройки применены: bantime={new_bt}, findtime={new_ft}, maxretry={new_mr}")
             else:
-                warn("Настройки сохранены, но Fail2ban не подтвердил reload (перезапустите вручную)")
+                p_state.config["jails"][jail] = previous
+                error("Настройки не применены: конфигурация Fail2ban не прошла проверку")
             prompt("Нажмите Enter для продолжения")
             
         # ── 6. Включение/выключение джейла ────────────────────────────────────
         elif choice == "6":
             clear()
             jail_opts = []
-            proxies = ["hydra-anytls", "hydra-mieru", "hydra-trusttunnel", "hydra-naive", "hydra-awg"]
-            systems = ["hydra-sshd", "hydra-recidive", "hydra-portscan"]
+            proxies = _PROTOCOL_JAILS
+            systems = _SYSTEM_JAILS
             all_jails = proxies + systems
             
             idx = 1
             for j in proxies:
-                cp = _f2b_read_conf(j)
-                en = cp.get(j, "enabled", fallback="true").strip().lower() == "true"
+                en = plugin.jail_options(state).get(j, {}).get("enabled", "false") == "true"
                 state_str = f"{GREEN}вкл{NC}" if en else f"{DIM}выкл{NC}"
-                jail_opts.append((str(idx), f"{CYAN}[Прокси]{NC} {j} [{state_str}]", ""))
+                jail_opts.append((str(idx), f"{CYAN}[Протокол]{NC} {j} [{state_str}]", ""))
                 idx += 1
             jail_opts.append(("-", "", ""))
             for j in systems:
-                cp = _f2b_read_conf(j)
-                en = cp.get(j, "enabled", fallback="true").strip().lower() == "true"
+                en = plugin.jail_options(state).get(j, {}).get("enabled", "false") == "true"
                 state_str = f"{GREEN}вкл{NC}" if en else f"{DIM}выкл{NC}"
                 jail_opts.append((str(idx), f"{YELLOW}[Система]{NC} {j} [{state_str}]", ""))
                 idx += 1
@@ -627,21 +622,32 @@ def menu_fail2ban(state: AppState, plugin) -> None:
                 continue
             jail = all_jails[int(raw_j) - 1]
             
-            cp = _f2b_read_conf(jail)
-            cur_en = cp.get(jail, "enabled", fallback="true").strip().lower() == "true"
-            new_en = "false" if cur_en else "true"
-            cp.set(jail, "enabled", new_en)
+            cur_en = plugin.jail_options(state).get(jail, {}).get("enabled", "false") == "true"
+            new_en = not cur_en
+            required_protocol = {
+                "hydra-awg": "amneziawg",
+            }.get(jail)
+            if new_en and required_protocol:
+                required_state = state.protocols.get(required_protocol)
+                if not required_state or not required_state.enabled:
+                    error(f"Сначала включите протокол {required_protocol}.")
+                    prompt("Нажмите Enter для продолжения")
+                    continue
+            from hydra.core.state import get_protocol, save_state
+            p_state = get_protocol(state, "fail2ban")
+            jail_config = p_state.config.setdefault("jails", {}).setdefault(jail, {})
+            previous = dict(jail_config)
+            jail_config["enabled"] = new_en
             
             info(f"Переключаю статус {jail}...")
-            if _f2b_write_conf(jail, cp):
+            if plugin.apply(state):
+                save_state(state)
                 if jail == "hydra-portscan":
-                    if new_en == "true":
-                        _portscan_add_log_rule()
-                    else:
-                        _portscan_remove_log_rule()
+                    plugin._sync_portscan_rule(new_en)
                 success(f"Джейл {jail} успешно {'выключен' if cur_en else 'включен'}!")
             else:
-                warn("Статус изменен, но Fail2ban не смог перезапуститься автоматически")
+                p_state.config["jails"][jail] = previous
+                error("Статус не изменён: конфигурация Fail2ban не прошла проверку")
             prompt("Нажмите Enter для продолжения")
             
         # ── 7. Просмотр лога ──────────────────────────────────────────────────
@@ -673,11 +679,19 @@ def menu_fail2ban(state: AppState, plugin) -> None:
             warn("Локальные изменения лимитов и параметров джейлов будут удалены.")
             if confirm("Продолжить?", default=False):
                 info("Восстанавливаю конфигурации...")
-                plugin._write_jails(state)
-                if _f2b_reload():
-                    success("Базовая конфигурация восстановлена!")
+                from hydra.core.state import save_state
+                was_active = _f2b_active()
+                if plugin.restore_defaults(state):
+                    save_state(state)
+                    if was_active:
+                        success("Базовая конфигурация восстановлена и применена!")
+                    else:
+                        success("Базовая конфигурация восстановлена. Служба оставлена остановленной.")
                 else:
-                    error("Базовая конфигурация записана, но служба не запустилась.")
+                    detail = getattr(plugin, "last_error", "")
+                    error("Не удалось восстановить конфигурацию; предыдущие настройки сохранены.")
+                    if detail:
+                        error(f"Причина: {detail}")
             else:
                 info("Отменено.")
             prompt("Нажмите Enter для продолжения")

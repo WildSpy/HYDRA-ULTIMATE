@@ -1,5 +1,6 @@
 """tests/test_naive_plugin.py — Тесты для NaiveProxy plugin v2."""
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import sys
@@ -228,8 +229,10 @@ def test_on_enable_opens_firewall():
     with patch("hydra.utils.firewall.open_tcp") as mock_open, \
          patch("subprocess.run") as mock_run, \
          patch("hydra.ui.tui.prompt", side_effect=lambda text, default="": default), \
-         patch("hydra.ui.tui.confirm", return_value=False), \
-         patch.object(p, "apply", return_value=True):
+             patch("hydra.ui.tui.confirm", return_value=False), \
+             patch("hydra.ui.tui.menu", return_value="1"), \
+             patch("hydra.core.state.save_state"), \
+             patch.object(p, "apply", return_value=True):
         mock_run.return_value = MagicMock(stdout="active\n", returncode=0)
         p.on_enable(state)
         mock_open.assert_called_once_with(443, "naive")
@@ -255,7 +258,7 @@ def test_on_disable_closes_firewall():
     with patch("hydra.utils.firewall.close_tcp") as mock_close, \
          patch("subprocess.run") as mock_run:
         p.on_disable(state)
-        mock_close.assert_called_once_with(443)
+        mock_close.assert_called_once_with(443, "naive")
 
 
 def test_connected_clients_parses_ss():
@@ -318,7 +321,7 @@ def test_traffic_parses_caddy_access_logs(tmp_path):
     caddy_username = p._derive_username(user)
     
     log_content = (
-        f'{{"ts":1698246377,"user_id":"{caddy_username}","size":1000}}\n'
+        f'{{"ts":1698246377,"user_id":"{caddy_username}","size":1000,"bytes_read":200}}\n'
         f'{{"ts":1698246378,"user_id":"{caddy_username}","size":1500}}\n'
         f'{{"ts":1698246379,"user_id":"other_user","size":5000}}\n'
         f'{{"ts":1698246380,"user":"{caddy_username}","size":500}}\n'
@@ -331,5 +334,192 @@ def test_traffic_parses_caddy_access_logs(tmp_path):
     with patch.object(p, "_installed", return_value=True), \
          patch("hydra.plugins.naive.plugin.LOG_DIR", tmp_path):
         traffic_data = p.traffic(state)
-        assert traffic_data == {"user_email@example.com": 3000}
+        assert traffic_data == {"user_email@example.com": 3200}
+
+
+def test_update_traffic_uses_log_cursor_without_double_counting(tmp_path):
+    p = NaivePlugin()
+    user = _make_user("user_email@example.com", uuid="uuid-a")
+    state = _make_state([user])
+    username = p._derive_username(user)
+    log_file = tmp_path / "access.log"
+    log_file.write_text(
+        f'{{"user_id":"{username}","size":1000,"bytes_read":250}}\n',
+        encoding="utf-8",
+    )
+
+    with patch("hydra.plugins.naive.plugin.LOG_DIR", tmp_path):
+        p.update_traffic(state)
+        p.update_traffic(state)
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(f'{{"user_id":"{username}","size":500,"bytes_read":100}}\n')
+        p.update_traffic(state)
+
+    assert user.credentials["naive"]["traffic_used_bytes"] == 1850
+    assert user.credentials["naive"]["traffic_rx_bytes"] == 1500
+    assert user.credentials["naive"]["traffic_tx_bytes"] == 350
+
+
+def test_recent_connections_uses_completed_caddy_connect_records(tmp_path):
+    p = NaivePlugin()
+    user = _make_user("user_email@example.com", uuid="uuid-a")
+    state = _make_state([user])
+    username = p._derive_username(user)
+    now = time.time()
+    records = [
+        {"ts": now - 30, "user_id": username, "size": 1000, "bytes_read": 200,
+         "request": {"method": "CONNECT"}},
+        {"ts": now - 10, "user_id": username, "size": 500, "bytes_read": 100,
+         "request": {"method": "CONNECT"}},
+        {"ts": now - 600, "user_id": username, "size": 9999, "bytes_read": 9999,
+         "request": {"method": "CONNECT"}},
+        {"ts": now - 5, "user_id": username, "size": 9999, "bytes_read": 9999,
+         "request": {"method": "GET"}},
+    ]
+    (tmp_path / "access.log").write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8",
+    )
+
+    with patch("hydra.plugins.naive.plugin.LOG_DIR", tmp_path):
+        rows = p.recent_connections(state)
+
+    assert len(rows) == 1
+    assert rows[0]["email"] == user.email
+    assert rows[0]["online"] is False
+    assert rows[0]["connections"] == 2
+    assert rows[0]["rx"] == 1500
+    assert rows[0]["tx"] == 300
+
+
+# === QUIC tests ===
+
+def _make_state_with_network(users, domain="example.com", network="tcp"):
+    state = _make_state(users, domain)
+    state.protocols["naive"].config["network"] = network
+    return state
+
+
+def test_client_link_quic_mode():
+    """При network=quic ссылка начинается с naive+quic://."""
+    p = NaivePlugin()
+    user = _make_user("a@x.com", uuid="uuid-a")
+    state = _make_state_with_network([user], network="quic")
+    link = p.client_link(user, state)
+    assert link.startswith("naive+quic://")
+    assert "example.com:443" in link
+
+
+def test_client_links_both_mode():
+    """client_links() возвращает 2 ссылки при network=both."""
+    p = NaivePlugin()
+    user = _make_user("a@x.com", uuid="uuid-a")
+    state = _make_state_with_network([user], network="both")
+    links = p.client_links(user, state)
+    assert len(links) == 2
+    schemes = [l.split("://")[0] for l in links]
+    assert "naive+https" in schemes
+    assert "naive+quic" in schemes
+
+
+def test_client_links_tcp_mode():
+    """client_links() возвращает 1 ссылку при network=tcp."""
+    p = NaivePlugin()
+    user = _make_user("a@x.com", uuid="uuid-a")
+    state = _make_state_with_network([user], network="tcp")
+    links = p.client_links(user, state)
+    assert len(links) == 1
+    assert links[0].startswith("naive+https://")
+
+
+def test_generate_client_config_quic():
+    """Конфиг с network=quic содержит quic outbound без alpn."""
+    p = NaivePlugin()
+    user = _make_user("a@x.com", uuid="uuid-a")
+    state = _make_state_with_network([user], network="quic")
+    cfg = json.loads(p.generate_client_config(user, state))
+    naive_outs = [o for o in cfg["outbounds"] if o["type"] == "naive"]
+    assert len(naive_outs) == 1
+    assert naive_outs[0]["network"] == "quic"
+    assert "alpn" not in naive_outs[0].get("tls", {})
+
+
+def test_generate_client_config_both():
+    """Конфиг с network=both содержит 2 outbound-а."""
+    p = NaivePlugin()
+    user = _make_user("a@x.com", uuid="uuid-a")
+    state = _make_state_with_network([user], network="both")
+    cfg = json.loads(p.generate_client_config(user, state))
+    naive_outs = [o for o in cfg["outbounds"] if o["type"] == "naive"]
+    assert len(naive_outs) == 2
+    networks = {o["network"] for o in naive_outs}
+    assert networks == {"tcp", "quic"}
+
+
+def test_set_transport_rejects_trusttunnel_quic_conflict_without_mutation():
+    """Конфликт UDP/443 отклоняется до apply/save и не меняет режим в TUI."""
+    p = NaivePlugin()
+    state = _make_state_with_network([], network="tcp")
+    state.protocols["trusttunnel"] = PluginState(
+        enabled=True,
+        config={"transport": "quic", "domain": "tt.example.com"},
+    )
+
+    with patch("hydra.core.state.save_state") as mock_save, \
+         patch("hydra.core.orchestrator.apply_config") as mock_apply:
+        assert p.set_transport(state, "quic") is False
+
+    assert state.protocols["naive"].config["network"] == "tcp"
+    mock_save.assert_not_called()
+    mock_apply.assert_not_called()
+
+
+def test_set_transport_rolls_back_state_and_runtime_when_apply_fails():
+    """Неуспешный apply восстанавливает прежний network и runtime."""
+    p = NaivePlugin()
+    state = _make_state_with_network([], network="tcp")
+
+    with patch("hydra.core.state.save_state") as mock_save, \
+         patch("hydra.core.orchestrator.apply_config", side_effect=[False, True]) as mock_apply, \
+         patch.object(p, "_sync_transport_firewall") as mock_firewall:
+        assert p.set_transport(state, "quic") is False
+
+    assert state.protocols["naive"].config["network"] == "tcp"
+    assert mock_apply.call_count == 2
+    mock_save.assert_called_once_with(state)
+    mock_firewall.assert_not_called()
+
+
+def test_set_transport_saves_only_after_successful_apply():
+    """Успешный режим сохраняется и только затем синхронизируется firewall."""
+    p = NaivePlugin()
+    state = _make_state_with_network([], network="tcp")
+
+    with patch("hydra.core.state.save_state") as mock_save, \
+         patch("hydra.core.orchestrator.apply_config", return_value=True) as mock_apply, \
+         patch.object(p, "_sync_transport_firewall") as mock_firewall:
+        assert p.set_transport(state, "quic") is True
+
+    assert state.protocols["naive"].config["network"] == "quic"
+    mock_apply.assert_called_once_with(state)
+    mock_save.assert_called_once_with(state)
+    mock_firewall.assert_called_once_with("tcp", "quic")
+
+
+def test_on_enable_opens_udp_for_quic():
+    """on_enable() вызывает open_udp(443) при network=quic."""
+    p = NaivePlugin()
+    state = _make_state([_make_user("a@x.com", uuid="uuid-a")])
+    state.protocols["naive"].config["network"] = "quic"
+    with patch("hydra.utils.firewall.open_tcp") as mock_tcp, \
+         patch("hydra.utils.firewall.open_udp") as mock_udp, \
+         patch("subprocess.run") as mock_run, \
+         patch("hydra.ui.tui.prompt", side_effect=lambda text, default="": default), \
+         patch("hydra.ui.tui.confirm", return_value=False), \
+         patch("hydra.ui.tui.menu", return_value="2"), \
+         patch.object(p, "apply", return_value=True):
+        mock_run.return_value = MagicMock(stdout="active\n", returncode=0)
+        p.on_enable(state)
+        mock_tcp.assert_called_once_with(443, "naive")
+        mock_udp.assert_called_once_with(443, "naive-quic")
+
 

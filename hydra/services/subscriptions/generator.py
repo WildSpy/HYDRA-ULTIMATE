@@ -315,6 +315,9 @@ def generate_links(user: User, state: AppState) -> list[str]:
                     link = p.client_link(user, state, profile=prof["name"])
                     if link:
                         links.append(link)
+            elif hasattr(p, "client_links"):
+                multi = p.client_links(user, state)
+                links.extend(multi)
             else:
                 link = p.client_link(user, state)
                 if link:
@@ -337,12 +340,20 @@ def generate_base64_sub(user: User, state: AppState) -> str:
             scheme = parsed.scheme.lower()
             
             proto_suffix = ""
-            if scheme in ("naive", "naive+quic", "naive+https"):
+            if scheme == "naive+quic":
+                proto_suffix = "NaiveProxy QUIC"
+            elif scheme in ("naive", "naive+https"):
                 proto_suffix = "NaiveProxy"
             elif scheme == "anytls":
                 proto_suffix = "AnyTLS"
             elif scheme in ("tt", "trusttunnel"):
-                proto_suffix = "TrustTunnel"
+                # Различаем TCP и QUIC по параметру alpn
+                query = urllib.parse.parse_qs(parsed.query)
+                alpn = query.get("alpn", ["h2"])[0]
+                if alpn == "h3":
+                    proto_suffix = "TrustTunnel QUIC"
+                else:
+                    proto_suffix = "TrustTunnel"
             elif scheme == "mierus":
                 proto_suffix = "Mieru"
                 

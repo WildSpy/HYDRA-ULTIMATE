@@ -4,13 +4,14 @@
   • configure() — генерит Caddyfile в памяти.
   • apply() — создает фейковый сайт, пишет Caddyfile, caddy validate + systemctl reload.
   • per-user: детерминированные username/password из uuid через derive_key.
-  • traffic — iptables accounting (как mieru).
+  • traffic — per-user Caddy access-log accounting (Rx + Tx).
   • TLS & HAProxy: использует certbot / существующий SSL-сертификат для корректной работы за HAProxy.
   • sing-box integration: исходящий трафик проксируется в sing-box через `upstream socks5://127.0.0.1:1080`.
   • probe resistance: незнакомые клиенты получают отклик от фейкового HTML-файла.
 """
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -130,15 +131,21 @@ class NaivePlugin(BasePlugin):
         Path("/var/lib/caddy-naive").mkdir(parents=True, exist_ok=True)
         self._create_fake_site()
 
-        CADDYFILE.write_text(self._pending_cfg)
-        CADDYFILE.chmod(0o640)
+        pending = CADDYFILE.with_suffix(".pending")
+        pending.write_text(self._pending_cfg)
+        pending.chmod(0o640)
 
-        err = self._validate_caddy()
+        err = self._validate_caddy(pending)
         if err:
+            pending.unlink(missing_ok=True)
             print(f"  Caddyfile validation error: {err}")
             return False
+        pending.replace(CADDYFILE)
 
-        subprocess.run(["systemctl", "reload-or-restart", SERVICE_NAME], capture_output=True)
+        enabled = subprocess.run(["systemctl", "enable", SERVICE_NAME], capture_output=True)
+        restarted = subprocess.run(["systemctl", "reload-or-restart", SERVICE_NAME], capture_output=True)
+        if enabled.returncode != 0 or restarted.returncode != 0:
+            return False
         time.sleep(2)
         return True
 
@@ -150,16 +157,12 @@ class NaivePlugin(BasePlugin):
         user.credentials.setdefault("naive", {})
         user.credentials["naive"]["username"] = self._derive_username(user)
         user.credentials["naive"]["password"] = self._derive_password(user.uuid)
-        self.configure(state)
-        self.apply(state)
 
     def on_user_remove(self, user: User, state: AppState) -> None:
-        self.configure(state)
-        self.apply(state)
+        pass
 
     def on_user_block(self, user: User, state: AppState) -> None:
-        self.configure(state)
-        self.apply(state)
+        pass
 
     # ═════════════════════════════════════════════════════════════════════
     #  Клиентский конфиг
@@ -173,20 +176,41 @@ class NaivePlugin(BasePlugin):
         password = self._derive_password(user.uuid)
         port = DEFAULT_PORT
 
-        outbound = {
-            "type": "naive",
-            "tag": f"naive-{username}",
-            "server": domain,
-            "server_port": port,
-            "username": username,
-            "password": password,
-            "network": "tcp",
-            "tls": {
-                "enabled": True,
-                "server_name": domain,
-                "alpn": ["h2"],
-            },
-        }
+        ps = state.protocols.get("naive")
+        network_mode = ps.config.get("network", "tcp") if ps and ps.config else "tcp"
+
+        outbounds = []
+
+        if network_mode in ("tcp", "both"):
+            outbounds.append({
+                "type": "naive",
+                "tag": f"naive-h2-{username}",
+                "server": domain,
+                "server_port": port,
+                "username": username,
+                "password": password,
+                "network": "tcp",
+                "tls": {
+                    "enabled": True,
+                    "server_name": domain,
+                    "alpn": ["h2"],
+                },
+            })
+
+        if network_mode in ("quic", "both"):
+            outbounds.append({
+                "type": "naive",
+                "tag": f"naive-quic-{username}",
+                "server": domain,
+                "server_port": port,
+                "username": username,
+                "password": password,
+                "network": "quic",
+                "tls": {
+                    "enabled": True,
+                    "server_name": domain,
+                },
+            })
 
         full = {
             "log": {"level": "info"},
@@ -196,8 +220,8 @@ class NaivePlugin(BasePlugin):
                     {"tag": "local", "address": "1.1.1.1", "detour": "direct"},
                 ],
             },
-            "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
-            "route": {"final": outbound["tag"]},
+            "outbounds": outbounds + [{"type": "direct", "tag": "direct"}],
+            "route": {"final": outbounds[0]["tag"] if outbounds else "direct"},
         }
         return json.dumps(full, indent=2)
 
@@ -209,12 +233,125 @@ class NaivePlugin(BasePlugin):
         password = self._derive_password(user.uuid)
         port = DEFAULT_PORT
 
+        ps = state.protocols.get("naive")
+        network_mode = ps.config.get("network", "tcp") if ps and ps.config else "tcp"
+
         user_q = urllib.parse.quote(username, safe="")
         pass_q = urllib.parse.quote(password, safe="")
-        tag_raw = f"{username} NaiveProxy"
-        tag_q = urllib.parse.quote(tag_raw, safe="")
         sni_q = urllib.parse.quote(domain, safe="")
-        return f"naive+https://{user_q}:{pass_q}@{domain}:{port}?security=tls&sni={sni_q}#{tag_q}"
+
+        if network_mode == "quic":
+            tag_raw = f"{username} NaiveProxy QUIC"
+            tag_q = urllib.parse.quote(tag_raw, safe="")
+            return f"naive+quic://{user_q}:{pass_q}@{domain}:{port}?security=tls&sni={sni_q}#{tag_q}"
+        else:
+            tag_raw = f"{username} NaiveProxy"
+            tag_q = urllib.parse.quote(tag_raw, safe="")
+            return f"naive+https://{user_q}:{pass_q}@{domain}:{port}?security=tls&sni={sni_q}#{tag_q}"
+
+    def client_links(self, user: User, state: AppState) -> list[str]:
+        """Возвращает список клиентских ссылок (может быть >1 при network=both)."""
+        domain = state.network.domain
+        if not domain:
+            return []
+
+        ps = state.protocols.get("naive")
+        network_mode = ps.config.get("network", "tcp") if ps and ps.config else "tcp"
+
+        username = self._derive_username(user)
+        password = self._derive_password(user.uuid)
+        port = DEFAULT_PORT
+
+        user_q = urllib.parse.quote(username, safe="")
+        pass_q = urllib.parse.quote(password, safe="")
+        sni_q = urllib.parse.quote(domain, safe="")
+
+        links = []
+
+        if network_mode in ("tcp", "both"):
+            tag_q = urllib.parse.quote(f"{username} NaiveProxy", safe="")
+            links.append(f"naive+https://{user_q}:{pass_q}@{domain}:{port}?security=tls&sni={sni_q}#{tag_q}")
+
+        if network_mode in ("quic", "both"):
+            tag_q = urllib.parse.quote(f"{username} NaiveProxy QUIC", safe="")
+            links.append(f"naive+quic://{user_q}:{pass_q}@{domain}:{port}?security=tls&sni={sni_q}#{tag_q}")
+
+        return links
+
+    def set_transport(self, state: AppState, network: str) -> bool:
+        """Транзакционно переключает TCP/QUIC и откатывает state/runtime при сбое."""
+        if network not in ("tcp", "quic", "both"):
+            return False
+
+        from hydra.core.state import get_protocol, save_state
+
+        ps = get_protocol(state, "naive")
+        old_config = copy.deepcopy(ps.config)
+        old_network = old_config.get("network", "tcp")
+        if network == old_network:
+            return True
+
+        ps.config["network"] = network
+        if network in ("quic", "both"):
+            try:
+                from hydra.core.sni_router import get_quic_owner
+                get_quic_owner(state, prospective="naive")
+            except ValueError:
+                ps.config = old_config
+                return False
+
+        if not ps.enabled:
+            save_state(state)
+            return True
+
+        from hydra.core.orchestrator import apply_config
+        try:
+            applied = apply_config(state)
+        except Exception:
+            applied = False
+
+        if applied:
+            save_state(state)
+            self._sync_transport_firewall(old_network, network)
+            return True
+
+        # apply_config() может сохранить state для внутренних миграций, поэтому
+        # прежнее значение обязательно записываем обратно и восстанавливаем runtime.
+        ps.config = old_config
+        save_state(state)
+        try:
+            apply_config(state)
+        except Exception:
+            pass
+        return False
+
+    def _sync_transport_firewall(self, old_network: str, network: str) -> None:
+        """Обновляет внешнее правило UDP и legacy accounting после успешного apply."""
+        from hydra.utils.firewall import open_udp, close_udp
+
+        if network in ("quic", "both"):
+            open_udp(DEFAULT_PORT, "naive-quic")
+        elif old_network in ("quic", "both"):
+            close_udp(DEFAULT_PORT, "naive-quic")
+
+        self._remove_iptables_rules()
+        subprocess.run([
+            "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", str(DEFAULT_PORT),
+            "-m", "comment", "--comment", "naive-rx",
+        ], capture_output=True)
+        subprocess.run([
+            "iptables", "-I", "OUTPUT", "1", "-p", "tcp", "--sport", str(DEFAULT_PORT),
+            "-m", "comment", "--comment", "naive-tx",
+        ], capture_output=True)
+        if network in ("quic", "both"):
+            subprocess.run([
+                "iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", str(DEFAULT_PORT),
+                "-m", "comment", "--comment", "naive-rx-udp",
+            ], capture_output=True)
+            subprocess.run([
+                "iptables", "-I", "OUTPUT", "1", "-p", "udp", "--sport", str(DEFAULT_PORT),
+                "-m", "comment", "--comment", "naive-tx-udp",
+            ], capture_output=True)
 
     # ═════════════════════════════════════════════════════════════════════
     #  Статус / трафик
@@ -253,6 +390,12 @@ class NaivePlugin(BasePlugin):
             from hydra.core.sni_router import get_effective_port
             state = load_state()
             effective_port = get_effective_port("naive", state)
+
+            ps = state.protocols.get("naive")
+            if ps and ps.config:
+                mode = ps.config.get("network", "tcp")
+                mode_labels = {"tcp": "HTTP/2 (TCP)", "quic": "QUIC (UDP)", "both": "HTTP/2 + QUIC"}
+                info["Транспорт"] = mode_labels.get(mode, mode)
         except Exception:
             pass
 
@@ -288,7 +431,7 @@ class NaivePlugin(BasePlugin):
                         if not user_id:
                             user_id = data.get("user")
                         if user_id:
-                            size = data.get("size", 0)
+                            size = self._access_log_bytes(data)
                             email = uname_to_email.get(user_id)
                             if email:
                                 result[email] = result.get(email, 0) + size
@@ -298,36 +441,203 @@ class NaivePlugin(BasePlugin):
             pass
         return result
 
+    @staticmethod
+    def _access_log_directions(data: dict) -> tuple[int, int]:
+        """Return client Rx/Tx from a structured Caddy access-log record."""
+        try:
+            rx = max(0, int(data.get("size", 0)))
+        except (TypeError, ValueError):
+            rx = 0
+        try:
+            tx = max(0, int(data.get("bytes_read", 0)))
+        except (TypeError, ValueError):
+            tx = 0
+        return rx, tx
+
+    @classmethod
+    def _access_log_bytes(cls, data: dict) -> int:
+        rx, tx = cls._access_log_directions(data)
+        return rx + tx
+
+    def update_traffic(self, state: AppState) -> None:
+        """Increment persisted totals from unread access-log records.
+
+        Cursors are keyed by the file inode, so Caddy may rename a live log
+        during rotation without making already processed records reappear.
+        """
+        import gzip
+        import json
+
+        uname_to_user = {self._derive_username(user): user for user in state.users}
+        cursor_root = state.install.setdefault("traffic_log_cursors", {})
+        cursors = cursor_root.setdefault("naive", {})
+
+        try:
+            paths = sorted(LOG_DIR.glob("access.log*"), key=lambda p: p.stat().st_mtime_ns)
+        except OSError:
+            return
+
+        for path in paths:
+            try:
+                stat = path.stat()
+                if path.suffix == ".gz":
+                    key = f"gz:{path.name}:{stat.st_mtime_ns}:{stat.st_size}"
+                    if cursors.get(key) == "done":
+                        continue
+                    handle = gzip.open(path, "rt", encoding="utf-8", errors="replace")
+                    start = 0
+                else:
+                    key = f"inode:{stat.st_dev}:{stat.st_ino}"
+                    start = max(0, int(cursors.get(key, 0)))
+                    if start > stat.st_size:
+                        start = 0
+                    handle = path.open("r", encoding="utf-8", errors="replace")
+
+                with handle:
+                    if start:
+                        handle.seek(start)
+                    while True:
+                        line = handle.readline()
+                        if not line:
+                            break
+                        try:
+                            data = json.loads(line)
+                            username = data.get("user_id") or data.get("user")
+                            user = uname_to_user.get(username)
+                            rx, tx = self._access_log_directions(data)
+                            size = rx + tx
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            continue
+                        if user is not None and size:
+                            stats = user.credentials.setdefault("naive", {})
+                            stats["traffic_used_bytes"] = (
+                                max(0, int(stats.get("traffic_used_bytes", 0))) + size
+                            )
+                            stats["traffic_rx_bytes"] = (
+                                max(0, int(stats.get("traffic_rx_bytes", 0))) + rx
+                            )
+                            stats["traffic_tx_bytes"] = (
+                                max(0, int(stats.get("traffic_tx_bytes", 0))) + tx
+                            )
+                    cursors[key] = "done" if path.suffix == ".gz" else handle.tell()
+            except OSError:
+                continue
+
+        # Bound metadata while retaining enough tombstones to recognize old
+        # compressed rotations that may still be present.
+        if len(cursors) > 128:
+            for key in list(cursors)[:-128]:
+                cursors.pop(key, None)
+
+    def recent_connections(self, state: AppState, window_seconds: int = 300) -> list[dict]:
+        """Return recently completed authenticated Caddy requests.
+
+        Caddy emits an access record after the request/CONNECT handler returns,
+        so these rows are deliberately marked as recent rather than online.
+        """
+        import gzip
+        import json
+
+        now = time.time()
+        cutoff = now - max(1, window_seconds)
+        uname_to_email = {self._derive_username(user): user.email for user in state.users}
+        grouped: dict[str, dict] = {}
+        try:
+            paths = sorted(LOG_DIR.glob("access.log*"), key=lambda p: p.stat().st_mtime_ns)
+        except OSError:
+            return []
+
+        for path in paths:
+            try:
+                opener = gzip.open if path.suffix == ".gz" else open
+                with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+                    for line in handle:
+                        try:
+                            data = json.loads(line)
+                            ts = float(data.get("ts", 0))
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            continue
+                        if ts < cutoff:
+                            continue
+                        username = data.get("user_id") or data.get("user")
+                        email = uname_to_email.get(username)
+                        if not email:
+                            continue
+                        request = data.get("request", {})
+                        method = request.get("method", "") if isinstance(request, dict) else ""
+                        if method and method != "CONNECT":
+                            continue
+                        rx, tx = self._access_log_directions(data)
+                        row = grouped.setdefault(email, {
+                            "email": email,
+                            "online": False,
+                            "rx": 0,
+                            "tx": 0,
+                            "connections": 0,
+                            "last_handshake": int(ts),
+                            "activity_kind": "recent",
+                        })
+                        row["rx"] += rx
+                        row["tx"] += tx
+                        row["connections"] += 1
+                        row["last_handshake"] = max(row["last_handshake"], int(ts))
+            except OSError:
+                continue
+        return list(grouped.values())
+
     def connected_clients(self, state: AppState | None = None) -> list[dict]:
         if not shutil.which("ss"):
             return []
+
+        ip_counts = {}
 
         r = subprocess.run(
             ["ss", "-t", "-H", "-n", "state", "established"],
             capture_output=True, text=True,
         )
-        if r.returncode != 0:
-            return []
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
 
-        ip_counts = {}
-        for line in r.stdout.splitlines():
-            parts = line.split()
-            if len(parts) < 4:
-                continue
+                local_addr = parts[2]
+                local_port_str = local_addr.split(":")[-1]
+                if not local_port_str.isdigit():
+                    continue
+                local_port = int(local_port_str)
 
-            local_addr = parts[2]
-            local_port_str = local_addr.split(":")[-1]
-            if not local_port_str.isdigit():
-                continue
-            local_port = int(local_port_str)
+                from hydra.core.sni_router import get_effective_port
+                effective = get_effective_port("naive", state) if state else DEFAULT_PORT
+                if local_port == effective or local_port == DEFAULT_PORT:
+                    remote_addr = parts[3]
+                    remote_parts = remote_addr.split(":")
+                    remote_ip = ":".join(remote_parts[:-1]).strip("[]")
+                    ip_counts[remote_ip] = ip_counts.get(remote_ip, 0) + 1
 
-            from hydra.core.sni_router import get_effective_port
-            effective = get_effective_port("naive", state) if state else DEFAULT_PORT
-            if local_port == effective or local_port == DEFAULT_PORT:
-                remote_addr = parts[3]
-                remote_parts = remote_addr.split(":")
-                remote_ip = ":".join(remote_parts[:-1]).strip("[]")
-                ip_counts[remote_ip] = ip_counts.get(remote_ip, 0) + 1
+        # Также проверяем UDP (QUIC)
+        r_udp = subprocess.run(
+            ["ss", "-u", "-H", "-n", "state", "established"],
+            capture_output=True, text=True,
+        )
+        if r_udp.returncode == 0:
+            for line in r_udp.stdout.splitlines():
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                local_addr = parts[2]
+                local_port_str = local_addr.split(":")[-1]
+                if not local_port_str.isdigit():
+                    continue
+                local_port = int(local_port_str)
+
+                from hydra.core.sni_router import get_effective_port
+                effective = get_effective_port("naive", state) if state else DEFAULT_PORT
+                if local_port == effective or local_port == DEFAULT_PORT:
+                    remote_addr = parts[3]
+                    remote_parts = remote_addr.split(":")
+                    remote_ip = ":".join(remote_parts[:-1]).strip("[]")
+                    ip_counts[remote_ip] = ip_counts.get(remote_ip, 0) + 1
 
         rx_bytes = 0
         tx_bytes = 0
@@ -353,7 +663,7 @@ class NaivePlugin(BasePlugin):
         for remote_ip, count in ip_counts.items():
             clients.append({
                 "online": True,
-                "email": f"{remote_ip} ({count} TCP)",
+                "email": f"{remote_ip} ({count} Conn)",
                 "rx": rx_bytes // n_clients if n_clients > 0 else 0,
                 "tx": tx_bytes // n_clients if n_clients > 0 else 0,
                 "last_handshake": now_ts,
@@ -393,6 +703,18 @@ class NaivePlugin(BasePlugin):
                     ps.config["cert_file"] = custom_cert
                     ps.config["key_file"] = custom_key
 
+            from hydra.ui.tui import menu as tui_menu
+            current_mode = ps.config.get("network", "tcp")
+            print()
+            print("  Выберите режим транспорта NaiveProxy:")
+            mode_choice = tui_menu([
+                ("1", "HTTP/2 (TCP)", "Стандартный режим, максимальная совместимость"),
+                ("2", "QUIC (UDP)", "HTTP/3 через UDP, может быть быстрее"),
+                ("3", "HTTP/2 + QUIC", "Оба транспорта одновременно (2 ссылки на клиента)"),
+            ], header="Транспорт NaiveProxy")
+            mode_map = {"1": "tcp", "2": "quic", "3": "both"}
+            ps.config["network"] = mode_map.get(mode_choice, current_mode)
+
             from hydra.core.state import save_state
             save_state(state)
 
@@ -410,6 +732,15 @@ class NaivePlugin(BasePlugin):
         from hydra.utils.firewall import open_tcp
         open_tcp(DEFAULT_PORT, "naive")
 
+        network_mode = ps.config.get("network", "tcp")
+        if network_mode in ("quic", "both"):
+            from hydra.core.sni_router import get_quic_owner
+            # Caddy L4 raw UDP proxy не умеет делить UDP/443 между двумя
+            # QUIC backend без QUIC-aware SNI matcher.
+            get_quic_owner(state, prospective="naive")
+            from hydra.utils.firewall import open_udp
+            open_udp(DEFAULT_PORT, "naive-quic")
+
         self._remove_iptables_rules()
         subprocess.run([
             "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", str(DEFAULT_PORT),
@@ -420,33 +751,31 @@ class NaivePlugin(BasePlugin):
             "-m", "comment", "--comment", "naive-tx"
         ], capture_output=True)
 
+        if network_mode in ("quic", "both"):
+            subprocess.run([
+                "iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", str(DEFAULT_PORT),
+                "-m", "comment", "--comment", "naive-rx-udp"
+            ], capture_output=True)
+            subprocess.run([
+                "iptables", "-I", "OUTPUT", "1", "-p", "udp", "--sport", str(DEFAULT_PORT),
+                "-m", "comment", "--comment", "naive-tx-udp"
+            ], capture_output=True)
+
         ps.enabled = True
-
-        from hydra.core.sni_router import rebuild
-        rebuild(state)
-
-        self.configure(state)
-        self.apply(state)
-
-        r = subprocess.run(
-            ["systemctl", "is-active", SERVICE_NAME],
-            capture_output=True, text=True,
-        )
-        if r.stdout.strip() != "active":
-            subprocess.run(["systemctl", "enable", "--now", SERVICE_NAME], capture_output=True)
 
     def on_disable(self, state: AppState) -> None:
         from hydra.utils.firewall import close_tcp
         subprocess.run(["systemctl", "stop", SERVICE_NAME], capture_output=True)
-        close_tcp(DEFAULT_PORT)
+        close_tcp(DEFAULT_PORT, "naive")
+
+        from hydra.utils.firewall import close_udp
+        close_udp(DEFAULT_PORT, "naive-quic")
+
         self._remove_iptables_rules()
 
         ps = state.protocols.get("naive")
         if ps:
             ps.enabled = False
-
-        from hydra.core.sni_router import rebuild
-        rebuild(state)
 
     # ═════════════════════════════════════════════════════════════════════
     #  Внутренние помощники
@@ -532,7 +861,7 @@ class NaivePlugin(BasePlugin):
             except Exception:
                 pass
 
-        from hydra.utils.firewall import is_ufw_active
+        from hydra.utils.firewall import temporary_open_port
 
         if not shutil.which("apt-get") and not shutil.which("certbot"):
             return False
@@ -551,40 +880,23 @@ class NaivePlugin(BasePlugin):
                 subprocess.run(["systemctl", "stop", s], capture_output=True)
                 was_running.append(s)
 
-        ufw_opened = False
-        ipt_opened = False
-        if is_ufw_active():
-            subprocess.run(["ufw", "allow", "80/tcp", "comment", "temp-certbot"], capture_output=True)
-            ufw_opened = True
-        else:
-            r_chk = subprocess.run(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", "80", "-j", "ACCEPT"], capture_output=True)
-            if r_chk.returncode != 0:
-                subprocess.run(["iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", "80", "-j", "ACCEPT"], capture_output=True)
-                ipt_opened = True
-
-        r = subprocess.run([
-            "certbot", "certonly", "--standalone",
-            "-d", domain,
-            "--non-interactive", "--agree-tos",
-            "--register-unsafely-without-email",
-            "--keep-until-expiring",
-        ], capture_output=True, text=True)
-
-        success = r.returncode == 0
-        if not success:
-            print(f"  [Ошибка certbot] Вывод:\n{r.stderr or r.stdout or ''}")
-
-        if ufw_opened:
-            subprocess.run(["ufw", "delete", "allow", "80/tcp"], capture_output=True)
-        if ipt_opened:
-            subprocess.run(["iptables", "-D", "INPUT", "-p", "tcp", "--dport", "80", "-j", "ACCEPT"], capture_output=True)
-
-        for s in was_running:
-            if s != "caddy-naive":
-                print(f"  Восстанавливаю {s}...")
-                subprocess.run(["systemctl", "start", s], capture_output=True)
-
-        return success
+        try:
+            with temporary_open_port("tcp", 80, "temp-certbot"):
+                r = subprocess.run([
+                    "certbot", "certonly", "--standalone",
+                    "-d", domain,
+                    "--non-interactive", "--agree-tos",
+                    "--register-unsafely-without-email",
+                    "--keep-until-expiring",
+                ], capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"  [Ошибка certbot] Вывод:\n{r.stderr or r.stdout or ''}")
+            return r.returncode == 0
+        finally:
+            for s in was_running:
+                if s != "caddy-naive":
+                    print(f"  Восстанавливаю {s}...")
+                    subprocess.run(["systemctl", "start", s], capture_output=True)
 
     @staticmethod
     def _installed() -> bool:
@@ -702,10 +1014,10 @@ class NaivePlugin(BasePlugin):
 }}
 """
 
-    def _validate_caddy(self) -> str | None:
+    def _validate_caddy(self, config_path: Path = CADDYFILE) -> str | None:
         r = subprocess.run(
             [str(BIN_PATH), "validate",
-             "--config", str(CADDYFILE), "--adapter", "caddyfile"],
+             "--config", str(config_path), "--adapter", "caddyfile"],
             capture_output=True, text=True,
         )
         if r.returncode != 0:
