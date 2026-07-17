@@ -1819,7 +1819,6 @@ def _show_connections(state: AppState):
         
         state = load_state()
         all_clients = []
-        has_naive = False
         from hydra.services.active_connections import tracked_active_connections
         all_clients.extend(tracked_active_connections(state))
         for p in enabled(state, PluginCategory.TRANSPORT):
@@ -1828,7 +1827,6 @@ def _show_connections(state: AppState):
             # These are represented by the attributed Clash API snapshot. ss
             # sees only internal proxy legs and cannot identify their users.
             if p.meta.name == "naive":
-                has_naive = True
                 recent = getattr(p, "recent_connections", None)
                 if recent:
                     try:
@@ -1900,15 +1898,13 @@ def _show_connections(state: AppState):
                     
                 print(f"  {plugin_name:<12} {status_ico} {BOLD}{email_disp:<28}{NC} {traffic_str:<20} {activity:<15}")
             print()
-            print(f"  {DIM}● активен; ◐ завершённый Naive CONNECT за последние 5 минут. Накопленный итог — в разделе 1.{NC}")
+            print(f"  {DIM}● Активно ◐ Активно (5 мин){NC}")
 
         from hydra.services.active_connections import traffic_daemon_fresh
         if not state.network.clash_api_enabled:
             print(f"  {YELLOW}AnyTLS/Mieru/TrustTunnel не показаны: Clash API и демон статистики выключены.{NC}")
         elif not traffic_daemon_fresh(state):
             print(f"  {YELLOW}Данные Clash API устарели: проверьте службу hydra-traffic-daemon.{NC}")
-        if has_naive:
-            print(f"  {DIM}NaiveProxy берётся из Caddy access-log: имя и Rx/Tx достоверны после завершения CONNECT.{NC}")
             
         choice = menu([
             ("R", "🔄 Обновить список", ""),
