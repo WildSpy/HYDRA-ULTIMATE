@@ -26,6 +26,7 @@ def run_sync() -> None:
     """
     state = load_state()
     any_blocked = False
+    newly_blocked = 0
 
     # 1. Проверка лимитов трафика
     # Refresh counters and persist them under the same cross-process lock used
@@ -39,6 +40,7 @@ def run_sync() -> None:
             if user.email == email and not user.blocked:
                 user.blocked = True
                 any_blocked = True
+                newly_blocked += 1
                 _log(f"User {email} blocked: traffic limit exceeded")
                 for p in get_enabled(state):
                     try:
@@ -63,6 +65,7 @@ def run_sync() -> None:
             if expiry < now:
                 user.blocked = True
                 any_blocked = True
+                newly_blocked += 1
                 _log(f"User {user.email} blocked: subscription expired")
                 for p in get_enabled(state):
                     try:
@@ -120,6 +123,8 @@ def run_sync() -> None:
     except Exception as e:
         _log(f"WARP auto-update check failed: {e}")
 
+    _log(f"Sync completed: newly blocked users={newly_blocked}")
+
 def _log(msg: str) -> None:
     try:
         log = Path("/var/log/hydra/sync-agent.log")
@@ -135,5 +140,6 @@ if __name__ == "__main__":
     try:
         run_sync()
     except Exception as e:
+        _log(f"Sync failed: {e}")
         print(f"Sync agent error: {e}", file=sys.stderr)
         sys.exit(1)

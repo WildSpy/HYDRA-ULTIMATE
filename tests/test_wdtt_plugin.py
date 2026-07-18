@@ -204,6 +204,18 @@ def test_traffic_returns_empty():
     assert p.traffic(state) == {}
 
 
+def test_total_traffic_reads_wdtt_interface_counters():
+    p = WdttPlugin()
+    with patch.object(Path, "read_text", side_effect=["120\n", "30\n"]):
+        assert p.total_traffic() == 150
+
+
+def test_total_traffic_is_unavailable_when_interface_cannot_be_read():
+    p = WdttPlugin()
+    with patch.object(Path, "read_text", side_effect=OSError("missing")):
+        assert p.total_traffic() is None
+
+
 def test_connected_clients_returns_empty():
     p = WdttPlugin()
     assert p.connected_clients() == []

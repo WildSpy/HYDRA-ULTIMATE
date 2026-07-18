@@ -494,7 +494,7 @@ def menu_core(state: AppState):
             kv("Статус:", f"{_ok(ok_r)} {'запущен' if ok_r else 'остановлен'}"),
             kv("Версия:", ver or "—"),
             kv("Конфиг:", f"{DIM}/etc/sing-box/config.json{NC}"),
-            kv("Лог:", f"{DIM}/var/log/sing-box/sing-box.log{NC}"),
+            kv("Лог:", f"{DIM}journalctl -u sing-box{NC}"),
         ])
 
         choice = menu(
@@ -1685,19 +1685,14 @@ def menu_monitoring(state: AppState):
         active_users = sum(not user.blocked for user in state.users)
         sync_active = _unit_active("hydra-sync-agent.timer")
         traffic_active = _unit_active("hydra-traffic-daemon.service")
-        warp_active = bool(
-            state.protocols.get("warp") and state.protocols["warp"].enabled
-        )
         
         lines = [
             f"  🔌 {BOLD}Протоколы:{NC} {GREEN}{running_count} работают{NC} / {len(enabled_names)} включено",
             f"  👥 {BOLD}Пользователи:{NC} {CYAN}{active_users} активны{NC} / {users_count} всего",
             f"  🖥️  {BOLD}Система:{NC} Load Avg {YELLOW}{load_str}{NC}  │  RAM {YELLOW}{ram_str}{NC}",
-            f"  🌐 {BOLD}Маршрутизация:{NC} WARP "
-            f"{f'{GREEN}включён{NC}' if warp_active else f'{DIM}выключен{NC}'}",
-            f"  ⚙️  {BOLD}Фоновые службы:{NC} учёт "
-            f"{f'{GREEN}●{NC}' if traffic_active else f'{DIM}○{NC}'}  синхронизация "
-            f"{f'{GREEN}●{NC}' if sync_active else f'{DIM}○{NC}'}",
+            f"  ⚙️  {BOLD}Фоновые службы:{NC} Sync Agent "
+            f"{f'{GREEN}●{NC}' if sync_active else f'{DIM}○{NC}'}  Clash API "
+            f"{f'{GREEN}●{NC}' if traffic_active else f'{DIM}○{NC}'}",
         ]
         panel("💻  Состояние системы", lines)
 
@@ -1729,17 +1724,17 @@ def _menu_service_settings(state: AppState):
         clash_enabled = bool(getattr(state.network, "clash_api_enabled", False))
         traffic_active = _unit_active("hydra-traffic-daemon.service")
         panel("Фоновые службы", [
-            kv("Sync Agent:", f"{GREEN}включён 🟢{NC}" if sync_active else f"{DIM}выключен ⚪{NC}"),
-            kv("Учёт трафика:", (
-                f"{GREEN}работает 🟢{NC}" if clash_enabled and traffic_active
-                else f"{YELLOW}включён, служба не работает 🟡{NC}" if clash_enabled
-                else f"{DIM}выключен ⚪{NC}"
+            kv("Sync Agent:", f"{GREEN}активно 🟢{NC}" if sync_active else f"{DIM}неактивно ⚪{NC}"),
+            kv("Clash API:", (
+                f"{GREEN}активно 🟢{NC}" if clash_enabled and traffic_active
+                else f"{YELLOW}ошибка службы 🟡{NC}" if clash_enabled
+                else f"{DIM}неактивно ⚪{NC}"
             )),
         ])
         choice = menu([
             ("1", "📋 Просмотр системных логов", "Sing-Box, Sync-Agent, Fail2ban и др."),
             ("2", "🔄 Sync Agent", "Проверка лимитов, сроков действия и обновление WARP-списков"),
-            ("3", "📊 Учёт трафика (Clash API)", "Локальный API Sing-Box и демон статистики"),
+            ("3", "📊 Clash API", "Локальный API Sing-Box и демон статистики трафика"),
             ("0", "↩ Назад", "")
         ], "СЕРВИСНЫЕ НАСТРОЙКИ")
         
@@ -1755,6 +1750,16 @@ def _menu_service_settings(state: AppState):
 
 def _show_traffic_combined(state: AppState):
     sort_by = "traffic"
+    show_zero_users = True
+
+    def share_bar(value: int, total: int, width: int = 11) -> str:
+        ratio = min(1.0, value / total) if total > 0 else 0.0
+        filled = int(round(ratio * width))
+        return (
+            f"{CYAN}{'█' * filled}{DIM}{'░' * (width - filled)}{NC} "
+            f"{ratio * 100:5.1f}%"
+        )
+
     while True:
         clear()
         title("📊 Потребление трафика")
@@ -1779,26 +1784,63 @@ def _show_traffic_combined(state: AppState):
         ]
         names = [name for name in order if name in enabled_names or by_protocol.get(name, 0)]
         names.extend(sorted(set(by_protocol) - set(names)))
-        distributed = sum(by_protocol.values())
-        total_traffic = sum(user.traffic_used_bytes for user in state.users)
-        
-        print(f"  {BOLD}Трафик по протоколам:{NC}")
-        print(f"  {BOLD}{'Протокол':<18} {'Накоплено':<20} {'Состояние':<12}{NC}")
-        print(f"  {DIM}{'─' * 38}{NC}")
+
+        aggregate_totals = {
+            name: int(stats.get("traffic_used_bytes", 0))
+            for name, stats in state.install.get("protocol_traffic_totals", {}).items()
+            if isinstance(stats, dict)
+        }
+        user_total = sum(max(0, int(user.traffic_used_bytes)) for user in state.users)
+        attributed_user_total = sum(
+            max(0, int(stats.get("traffic_used_bytes", 0)))
+            for user in state.users
+            for stats in user.credentials.values()
+            if isinstance(stats, dict)
+        )
+        legacy_unattributed = max(0, user_total - attributed_user_total)
+        protocol_total = sum(by_protocol.values())
+        total_traffic = protocol_total + legacy_unattributed
+        unattributed_total = sum(aggregate_totals.values()) + legacy_unattributed
+        active_users = sum(not user.blocked for user in state.users)
+        limited_users = sum(user.traffic_limit_gb > 0 for user in state.users)
+
+        panel("📊 Сводка трафика", [
+            kv("Всего учтено:", f"{BOLD}{CYAN}{_bytes_auto(total_traffic)}{NC}"),
+            kv("По пользователям:", f"{GREEN}{_bytes_auto(user_total)}{NC}"),
+            kv("Только общий учёт:", (
+                f"{YELLOW}{_bytes_auto(unattributed_total)}{NC}"
+                if unattributed_total else f"{DIM}0 B{NC}"
+            )),
+            kv("Пользователи:", f"{active_users} активны · {limited_users} с лимитом · {len(state.users)} всего"),
+        ])
+
+        print()
+        print(f"  {BOLD}По протоколам{NC}")
+        print(f"  {BOLD}{'Протокол':<15} {'Трафик':>12}  {'Доля':<18} {'Учёт':<13} {'Статус':<8}{NC}")
+        print(f"  {DIM}{'─' * 77}{NC}")
         for name in names:
             status = f"{GREEN}включён{NC}" if name in enabled_names else f"{DIM}история{NC}"
-            print(f"  {labels.get(name, name):<18} {GREEN}{_bytes_auto(by_protocol.get(name, 0)):<20}{NC} {status}")
-        if total_traffic > distributed:
-            print(f"  {'Старый/не распределён':<18} {YELLOW}{_bytes_auto(total_traffic - distributed):<20}{NC} {DIM}история{NC}")
-        print(f"  {DIM}{'─' * 38}{NC}")
-        print(f"  {BOLD}ИТОГО:          {CYAN}{_bytes_auto(total_traffic):<20}{NC}")
+            accounting_text = "общий" if name in aggregate_totals else "по пользов."
+            accounting_color = YELLOW if name in aggregate_totals else DIM
+            accounting = f"{accounting_color}{accounting_text:<13}{NC}"
+            value = by_protocol.get(name, 0)
+            print(
+                f"  {labels.get(name, name):<15} {GREEN}{_bytes_auto(value):>12}{NC}  "
+                f"{share_bar(value, total_traffic):<18} {accounting} {status}"
+            )
+        if legacy_unattributed:
+            print(
+                f"  {'Старая статист.':<15} {YELLOW}{_bytes_auto(legacy_unattributed):>12}{NC}  "
+                f"{share_bar(legacy_unattributed, total_traffic):<18} {DIM}без разбивки{NC}"
+            )
+        print(f"  {DIM}{'─' * 77}{NC}")
+        print(f"  {BOLD}{'ИТОГО':<15} {CYAN}{_bytes_auto(total_traffic):>12}{NC}")
         print()
         
-        # 2. Выводим трафик по пользователям
-        print(f"  {BOLD}Потребление трафика по пользователям:{NC}")
-        print()
-        
+        print(f"  {BOLD}По пользователям{NC}  {DIM}({user_total and _bytes_auto(user_total) or '0 B'}){NC}")
         users_sorted = list(state.users)
+        if not show_zero_users:
+            users_sorted = [user for user in users_sorted if user.traffic_used_bytes > 0]
         if sort_by == "traffic":
             users_sorted.sort(key=lambda u: u.traffic_used_bytes, reverse=True)
         elif sort_by == "name":
@@ -1811,12 +1853,14 @@ def _show_traffic_combined(state: AppState):
                     return "9999-12-31"
                 return u.expiry_date
             users_sorted.sort(key=get_expiry)
-            
-        print(f"  {BOLD}{'#':<3} {'Пользователь':<25} {'Использовано':<15} {'Лимит':<10} {'Статус':<10} {'Срок':<12}{NC}")
+
+        print(f"  {BOLD}{'#':<3} {'Пользователь':<20} {'Трафик':>12} {'Лимит':>10} {'Исп.':>7} {'Статус':<9} {'Срок':<10}{NC}")
         print(f"  {DIM}{'─' * 77}{NC}")
         for i, u in enumerate(users_sorted, 1):
             used = u.traffic_used_bytes
-            status_str = f"{RED}Блок{NC}" if u.blocked else f"{GREEN}Активен{NC}"
+            status_text = "блок" if u.blocked else "активен"
+            status_color = RED if u.blocked else GREEN
+            status_str = f"{status_color}{status_text:<9}{NC}"
             
             expiry_str = "бессрочно"
             if u.expiry_date:
@@ -1830,25 +1874,36 @@ def _show_traffic_combined(state: AppState):
                         expiry_str = f"{delta.days}дн"
                 except Exception:
                     expiry_str = u.expiry_date[:10]
-            
-            lim_str = f"{u.traffic_limit_gb:.1f} GiB" if u.traffic_limit_gb else "∞"
-            print(f"  {i:<3d} {BOLD}{u.email:<25}{NC} {_bytes_auto(used):<15} {lim_str:<10} {status_str:<10} {expiry_str:<12}")
-            
+
+            limit_bytes = int(u.traffic_limit_gb * 1073741824)
+            lim_str = f"{u.traffic_limit_gb:.1f} GiB" if limit_bytes else "∞"
+            usage_str = f"{min(999, used / limit_bytes * 100):.0f}%" if limit_bytes else "—"
+            email = u.email if len(u.email) <= 20 else u.email[:17] + "..."
+            print(
+                f"  {i:<3d} {BOLD}{email:<20}{NC} {_bytes_auto(used):>12} "
+                f"{lim_str:>10} {usage_str:>7} {status_str} {expiry_str:<10}"
+            )
+
+        if not users_sorted:
+            print(f"  {DIM}Нет пользователей с ненулевым трафиком.{NC}")
         print(f"  {DIM}{'─' * 77}{NC}")
-        print("  Сортировка: " + (f"{BOLD}[Трафик]{NC}" if sort_by == "traffic" else "[Трафик]") + " " +
-                             (f"{BOLD}[Имя]{NC}" if sort_by == "name" else "[Имя]") + " " +
-                             (f"{BOLD}[Лимит]{NC}" if sort_by == "limit" else "[Лимит]") + " " +
-                             (f"{BOLD}[Срок]{NC}" if sort_by == "expiry" else "[Срок]"))
+        shown = len(users_sorted)
+        print(f"  {DIM}Показано: {shown}/{len(state.users)} · общий трафик qWDTT не распределяется по пользователям{NC}")
         print()
-        
+
+        sort_labels = {
+            "traffic": "по трафику", "name": "по имени",
+            "limit": "по лимиту", "expiry": "по сроку",
+        }
         choice = menu([
-            ("1", "Сортировать по трафику", ""),
-            ("2", "Сортировать по имени", ""),
-            ("3", "Сортировать по лимиту", ""),
-            ("4", "Сортировать по сроку подписки", ""),
+            ("1", f"{'✓ ' if sort_by == 'traffic' else ''}Сортировать по трафику", ""),
+            ("2", f"{'✓ ' if sort_by == 'name' else ''}Сортировать по имени", ""),
+            ("3", f"{'✓ ' if sort_by == 'limit' else ''}Сортировать по лимиту", ""),
+            ("4", f"{'✓ ' if sort_by == 'expiry' else ''}Сортировать по сроку", ""),
+            ("Z", "Показать всех пользователей" if not show_zero_users else "Скрыть пользователей без трафика", ""),
             ("D", "🔍 Детальная информация пользователя", ""),
             ("0", "↩ Назад", "")
-        ], "УПРАВЛЕНИЕ ТРАФИКОМ")
+        ], f"УПРАВЛЕНИЕ · {sort_labels[sort_by].upper()}")
         
         if choice == "0":
             break
@@ -1860,6 +1915,8 @@ def _show_traffic_combined(state: AppState):
             sort_by = "limit"
         elif choice == "4":
             sort_by = "expiry"
+        elif choice.upper() == "Z":
+            show_zero_users = not show_zero_users
         elif choice.upper() == "D":
             u = _select_user(state, "Выберите пользователя для просмотра деталей")
             if u:
@@ -2178,29 +2235,31 @@ def _menu_logs(state: AppState):
         title("📋 Просмотр системных логов")
         print()
         
+        # Каждый пункт явно указывает реальный источник. Большинство сервисов
+        # пишут stdout/stderr в journald, а не в выдуманный log-файл.
         log_options = [
-            ("1", "📋 Sing-Box Core log", "/var/log/sing-box/sing-box.log"),
-            ("2", "🔄 Sync Agent log", "/var/log/hydra/sync-agent.log"),
-            ("3", "📡 Traffic Daemon log", "/var/log/hydra/traffic-daemon.log")
+            ("1", "📋 Sing-Box", "journal", "sing-box"),
+            ("2", "🔄 Sync Agent", "file", "/var/log/hydra/sync-agent.log"),
+            ("3", "📊 Clash API", "file", "/var/log/hydra/traffic-daemon.log"),
+            ("4", "🔗 qWDTT", "journal", "wdtt"),
+            ("5", "🌐 Caddy L4", "journal", "caddy-l4"),
+            ("6", "📨 Telemt", "journal", "telemt"),
+            ("7", "🔐 DNSCrypt", "journal", "dnscrypt-proxy"),
+            ("8", "🔒 Fail2ban", "journal", "fail2ban"),
+            ("9", "🌐 Naive access", "file", "/var/log/caddy-naive/access.log"),
+            ("A", "🍯 Honeypot events", "file", "/var/log/hydra-honeypot.log"),
+            ("B", "📦 Сервер подписок", "journal", "hydra-sub"),
+            ("C", "🤖 Telegram Admin Bot", "journal", "hydra-tg-admin"),
+            ("D", "🤖 Telegram Client Bot", "journal", "hydra-tg-bot"),
+            ("E", "🛠 HYDRA install", "file", "/var/log/hydra/install.log"),
         ]
-        
-        f2b_log = Path("/var/log/fail2ban.log")
-        hp_log = Path("/var/log/hydra-honeypot.log")
-        caddy_log = Path("/var/log/caddy-naive/access.log")
-        
-        if f2b_log.exists():
-            log_options.append(("4", "🔒 Fail2ban log", str(f2b_log)))
-        if hp_log.exists():
-            log_options.append(("5", "🍯 Honeypot log", str(hp_log)))
-        if caddy_log.exists():
-            log_options.append(("6", "🌐 Naive Caddy Access log", str(caddy_log)))
             
         print(f"  {BOLD}Текущий лимит строк для просмотра:{NC} {GREEN}{lines_count}{NC}\n")
         
         opts = []
-        for key, name, path in log_options:
-            exists_str = "доступен" if Path(path).exists() else "не найден"
-            opts.append((key, name, f"{path} ({exists_str})"))
+        for key, name, source_type, source in log_options:
+            source_label = source if source_type == "file" else f"journalctl -u {source}"
+            opts.append((key, name, f"{source_label} · {_log_source_status(source_type, source)}"))
             
         opts += [
             ("-", "", ""),
@@ -2220,48 +2279,104 @@ def _menu_logs(state: AppState):
                 warn("Введите корректное число.")
                 prompt("Нажмите Enter")
         else:
-            selected_path = None
+            selected_source = None
+            selected_type = ""
             selected_title = ""
-            for key, name, path in log_options:
+            for key, name, source_type, source in log_options:
                 if choice == key:
-                    selected_path = path
+                    selected_source = source
+                    selected_type = source_type
                     selected_title = name
                     break
                     
-            if selected_path:
-                _show_log_file(selected_title, selected_path, lines_count)
+            if selected_source:
+                _show_log_source(selected_title, selected_type, selected_source, lines_count)
 
 
-def _show_log_file(title_text: str, path_str: str, num_lines: int):
-    path = Path(path_str)
+def _unit_known(unit: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "--property=LoadState", "--value", unit],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "loaded"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _log_source_status(source_type: str, source: str) -> str:
+    if source_type == "file":
+        path = Path(source)
+        if not path.exists():
+            return "ещё не создан"
+        try:
+            return f"{_bytes_auto(path.stat().st_size)}"
+        except OSError:
+            return "недоступен"
+    if _unit_active(source):
+        return "активно"
+    return "остановлено" if _unit_known(source) else "не установлено"
+
+
+def _read_log_source(source_type: str, source: str, num_lines: int) -> tuple[list[str], str]:
+    if source_type == "file":
+        path = Path(source)
+        if not path.exists():
+            return [], "Файл ещё не создан."
+        try:
+            from collections import deque
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                return [line.rstrip("\n") for line in deque(handle, maxlen=num_lines)], ""
+        except OSError as exc:
+            return [], f"Ошибка чтения файла: {exc}"
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", source, "-n", str(num_lines),
+             "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [], f"Не удалось прочитать journalctl: {exc}"
+    output = (result.stdout or "").strip()
+    if result.returncode != 0:
+        return [], (result.stderr or output or "journalctl завершился с ошибкой").strip()
+    lines = [line for line in output.splitlines() if line.strip() and line.strip() != "-- No entries --"]
+    return lines, "" if lines else "В журнале пока нет записей."
+
+
+def _show_log_source(title_text: str, source_type: str, source: str, num_lines: int):
+    source_label = source if source_type == "file" else f"journalctl -u {source}"
     while True:
         clear()
         title(f"{title_text} ({num_lines} строк)")
-        print(f"  {DIM}Файл: {path_str}{NC}")
+        print(f"  {DIM}Источник: {source_label}{NC}")
         print()
-        
-        if not path.exists():
-            error("Файл лога не найден.")
-            print()
-        else:
-            try:
-                lines = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-                for line in lines[-num_lines:]:
-                    print(f"  {DIM}{line}{NC}")
-            except Exception as e:
-                error(f"Ошибка при чтении лога: {e}")
-            print()
-            
+
+        lines, message = _read_log_source(source_type, source, num_lines)
+        for line in lines:
+            print(f"  {DIM}{line}{NC}")
+        if message:
+            warn(message)
+        print()
+
         choice = menu([
             ("R", "🔄 Обновить", ""),
-            ("W", "👀 Следить за логом в реальном времени (Watch)", ""),
+            ("W", "👀 Следить в реальном времени", ""),
             ("0", "↩ Назад", "")
         ], "ПРОСМОТР ЛОГА")
-        
+
         if choice == "0":
             break
-        elif choice.upper() == "W":
-            _watch_log_file(title_text, path_str)
+        if choice.upper() == "W":
+            if source_type == "file":
+                _watch_log_file(title_text, source)
+            else:
+                _watch_journal(title_text, source)
+
+
+def _show_log_file(title_text: str, path_str: str, num_lines: int):
+    """Обратная совместимость для внутренних меню с файловыми логами."""
+    _show_log_source(title_text, "file", path_str, num_lines)
 
 
 def _watch_log_file(title_text: str, path_str: str):
@@ -2292,6 +2407,54 @@ def _watch_log_file(title_text: str, path_str: str):
                     time.sleep(0.5)
     except KeyboardInterrupt:
         pass
+
+
+def _watch_journal(title_text: str, unit: str):
+    import select
+    import time
+
+    clear()
+    title(f"👀 Слежение: {title_text}")
+    print(f"  {DIM}Источник: journalctl -u {unit}{NC}")
+    print(f"  {DIM}Нажмите [Enter] для выхода из режима слежения.{NC}")
+    print(f"  {DIM}{'─' * PANEL_W}{NC}")
+    print()
+
+    try:
+        process = subprocess.Popen(
+            ["journalctl", "-u", unit, "-f", "-n", "0", "--no-pager", "-o", "short-iso"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+    except OSError as exc:
+        error(f"Не удалось запустить journalctl: {exc}")
+        prompt("Нажмите Enter")
+        return
+
+    try:
+        while True:
+            if _is_enter_pressed():
+                break
+            if process.stdout is not None:
+                ready, _, _ = select.select([process.stdout], [], [], 0.25)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        print(f"  {DIM}{line.rstrip()}{NC}")
+                        continue
+            if process.poll() is not None:
+                warn("journalctl завершил работу.")
+                time.sleep(1)
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
 
 
 def _menu_sync_agent(state: AppState):
@@ -2383,18 +2546,17 @@ def _menu_clash_api(state: AppState):
         daemon_active = _unit_active("hydra-traffic-daemon.service")
             
         lines = [
-            kv("Учёт трафика:", f"{GREEN}включён 🟢{NC}" if enabled_status else f"{DIM}выключен ⚪{NC}"),
-            kv("Локальный Clash API:", f"{GREEN}включён{NC}" if enabled_status else f"{DIM}выключен{NC}"),
-            kv("Служба статистики:", f"{GREEN}активна 🟢{NC}" if daemon_active else f"{RED}не активна 🔴{NC}"),
+            kv("Clash API:", f"{GREEN}активно 🟢{NC}" if enabled_status and daemon_active else f"{DIM}неактивно ⚪{NC}"),
+            kv("Демон статистики:", f"{GREEN}активно 🟢{NC}" if daemon_active else f"{DIM}неактивно ⚪{NC}"),
         ]
-        panel("Учёт трафика", lines)
+        panel("Clash API", lines)
         
-        toggle_label = "⏹ Отключить учёт трафика" if enabled_status else "▶ Включить учёт трафика"
+        toggle_label = "⏹ Отключить Clash API" if enabled_status else "▶ Включить Clash API"
         toggle_desc = "Отключить Clash API и демон статистики" if enabled_status else "Включить локальный Clash API и демон статистики"
         choice = menu([
             ("1", toggle_label, toggle_desc),
             ("0", "↩ Назад", "")
-        ], "УЧЁТ ТРАФИКА")
+        ], "CLASH API")
         
         if choice == "0":
             break
@@ -2404,7 +2566,7 @@ def _menu_clash_api(state: AppState):
             info("Пересборка конфигурации Sing-Box...")
             from hydra.core.orchestrator import apply_config
             if apply_config(state):
-                success("Учёт трафика включён" if desired else "Учёт трафика отключён")
+                success("Clash API включён" if desired else "Clash API отключён")
             else:
                 state, _ = update_state(
                     lambda latest: setattr(latest.network, "clash_api_enabled", enabled_status)

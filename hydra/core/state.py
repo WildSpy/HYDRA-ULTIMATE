@@ -252,7 +252,10 @@ def save_state(state: AppState) -> None:
                                 "traffic_used_bytes", "traffic_last_raw_bytes",
                             }:
                                 target_stats[stat_key] = copy.deepcopy(stat_value)
-            for key in ("traffic_connection_counters", "traffic_log_cursors"):
+            for key in (
+                "traffic_connection_counters", "traffic_log_cursors",
+                "protocol_traffic_totals",
+            ):
                 if key in latest.install:
                     state.install[key] = copy.deepcopy(latest.install[key])
         _save_state_unlocked(state)
