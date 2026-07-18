@@ -162,8 +162,8 @@ class TestHttpAndAddressHelpers:
         assert original_headers == {"X-Test": "yes"}
         assert opened.call_args.kwargs["timeout"] == 4.5
         context = opened.call_args.kwargs["context"]
-        assert context.check_hostname is False
-        assert context.verify_mode == ssl.CERT_NONE
+        assert context.check_hostname is True
+        assert context.verify_mode == ssl.CERT_REQUIRED
 
     def test_make_http_request_preserves_explicit_content_type(self):
         with patch.object(diagnostics.urllib.request, "urlopen", return_value=response(b"{}")) as opened:
@@ -191,6 +191,16 @@ class TestHttpAndAddressHelpers:
         ) as opened:
             assert diagnostics.get_ip_address(4) == "203.0.113.7"
         assert opened.call_count == 2
+        assert diagnostics._thread_local.ip_version is None
+
+    def test_get_ip_address_rejects_malformed_and_wrong_version_values(self):
+        with patch.object(
+            diagnostics.urllib.request,
+            "urlopen",
+            side_effect=[response(b"error: unavailable"), response(b"2001:db8::1"), response(b"198.51.100.8")],
+        ) as opened:
+            assert diagnostics.get_ip_address(4) == "198.51.100.8"
+        assert opened.call_count == 3
         assert diagnostics._thread_local.ip_version is None
 
     def test_get_ip_address_returns_empty_when_all_endpoints_fail(self):
@@ -296,7 +306,7 @@ class TestCensorcheck:
         req = opened.call_args.args[0]
         assert req.full_url == "https://example.com"
         assert opened.call_args.kwargs["timeout"] == 3.0
-        assert opened.call_args.kwargs["context"].verify_mode == ssl.CERT_NONE
+        assert opened.call_args.kwargs["context"].verify_mode == ssl.CERT_REQUIRED
 
     def test_check_domain_censor_detects_dns_spoof(self, monkeypatch):
         monkeypatch.setattr(
@@ -370,6 +380,48 @@ class TestCensorcheck:
             assert by_domain[domain]["http"]["ipv4"]["status"] == len(domain)
             assert by_domain[domain]["https"]["ipv4"]["status"] == len(domain) + 100
         assert check.call_count == 6
+
+    @pytest.mark.parametrize(
+        ("http_status", "https_status", "expected"),
+        [
+            (200, 200, ("ok", "TLS")),
+            (301, 302, ("ok", "TLS")),
+            (200, 0, ("partial", "HTTPS TIMEOUT; HTTP OK")),
+            (500, 0, ("blocked", "TIMEOUT")),
+            (200, 500, ("partial", "HTTPS 500; HTTP OK")),
+            (500, 500, ("blocked", "HTTP 500")),
+            (200, 403, ("blocked", "HTTP 403")),
+            (200, 451, ("blocked", "HTTP 451")),
+            (200, -6, ("blocked", "TLS/SSL")),
+            (200, -5, ("blocked", "REGIONAL")),
+            (200, -4, ("blocked", "DNS-SPOOF")),
+            (200, -3, ("blocked", "DNS")),
+            (200, -2, ("blocked", "DPI/RESET")),
+            (200, -1, ("blocked", "TCP/REFUSED")),
+        ],
+    )
+    def test_classify_censor_status(self, http_status, https_status, expected):
+        assert diagnostics.classify_censor_status(http_status, https_status) == expected
+
+    def test_censorcheck_tui_renders_http_451_as_blocked(self, capsys):
+        data = {
+            "asn": "AS64500",
+            "results": [
+                {
+                    "service": "blocked.example",
+                    "http": {"ipv4": {"status": 200}},
+                    "https": {"ipv4": {"status": 451}},
+                }
+            ],
+        }
+        with patch.object(diagnostics, "clear"), patch.object(diagnostics, "title"), patch.object(
+            diagnostics, "run_function_with_spinner", return_value=data
+        ), patch.object(diagnostics, "prompt"):
+            diagnostics.test_censorcheck("geoblock")
+        output = capsys.readouterr().out
+        assert "BLOCKED" in output
+        assert "HTTP 451" in output
+        assert "OK:0" in output
 
 
 class TestRadarSpeedAndConfig:
@@ -504,6 +556,50 @@ Latency (ms):
         rendered = "\n".join(panel.call_args.args[1])
         for value in ("1234.50", "12346", "10.001s", "0.70", "0.81", "2.40"):
             assert value in rendered
+
+    def test_global_speedtest_quick_mode_measures_five_fastest_nodes(self):
+        def spinner(_title, func, nodes):
+            assert func is diagnostics.run_parallel_pings
+            return {node["url"]: (f"{index + 1}.0 ms", float(index + 1)) for index, node in enumerate(nodes)}
+
+        with patch.object(diagnostics, "clear"), patch.object(diagnostics, "title"), patch.object(
+            diagnostics, "ensure_packages", return_value=True
+        ), patch.object(diagnostics, "menu", return_value="1"), patch.object(
+            diagnostics, "run_function_with_spinner", side_effect=spinner
+        ), patch.object(diagnostics, "run_http_speed", return_value=250.0) as speed, patch.object(
+            diagnostics, "prompt"
+        ):
+            diagnostics.test_bench_speedtest()
+        assert speed.call_count == 5
+
+    def test_iperf3_ru_runs_download_and_upload_for_each_city(self):
+        socket_cm = MagicMock()
+        socket_cm.__enter__.return_value = MagicMock()
+
+        def run_command(cmd, **_kwargs):
+            completed = MagicMock(returncode=0)
+            if cmd[0] == "ping":
+                completed.stdout = "rtt min/avg/max/mdev = 1.0/12.5/20.0/1.0 ms\n"
+            else:
+                completed.stdout = json.dumps(
+                    {"end": {"sum_sent": {"bits_per_second": 80_000_000}, "sum_received": {"bits_per_second": 75_000_000}}}
+                )
+            return completed
+
+        with patch.object(diagnostics, "clear"), patch.object(diagnostics, "title"), patch.object(
+            diagnostics, "ensure_packages", return_value=True
+        ), patch.object(diagnostics.socket, "socket", return_value=socket_cm), patch.object(
+            diagnostics.subprocess, "run", side_effect=run_command
+        ) as run, patch.object(diagnostics, "prompt"):
+            diagnostics.test_iperf3_ru()
+
+        commands = [call.args[0] for call in run.call_args_list]
+        iperf_commands = [cmd for cmd in commands if cmd[0] == "iperf3"]
+        ping_commands = [cmd for cmd in commands if cmd[0] == "ping"]
+        assert len(iperf_commands) == 10
+        assert sum("-R" in cmd for cmd in iperf_commands) == 5
+        assert len(ping_commands) == 5
+        assert socket_cm.__exit__.call_count >= 5
 
     def test_menu_diagnostics_dispatches_every_action(self):
         actions = ["1", "2", "3", "4", "5", "6", "7", "0"]
