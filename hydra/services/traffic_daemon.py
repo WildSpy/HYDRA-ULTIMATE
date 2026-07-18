@@ -19,8 +19,8 @@ TRAFFIC_LOG_BACKUP = Path("/var/log/hydra/traffic-daemon.log.1")
 TRAFFIC_LOG_MAX_BYTES = 5 * 1024 * 1024
 
 
-def _write_log(message: str) -> None:
-    """Append one event while keeping the custom log bounded on disk."""
+def maintain_traffic_log() -> None:
+    """Compact an oversized legacy log while preserving its recent tail."""
     try:
         TRAFFIC_LOG.parent.mkdir(parents=True, exist_ok=True)
         if TRAFFIC_LOG.exists() and TRAFFIC_LOG.stat().st_size >= TRAFFIC_LOG_MAX_BYTES:
@@ -34,6 +34,14 @@ def _write_log(message: str) -> None:
                 tail = tail[newline + 1:]
             TRAFFIC_LOG_BACKUP.write_bytes(tail)
             TRAFFIC_LOG.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _write_log(message: str) -> None:
+    """Append one traffic event while keeping the custom log bounded."""
+    try:
+        maintain_traffic_log()
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with TRAFFIC_LOG.open("a", encoding="utf-8") as handle:
             handle.write(f"[{timestamp}] {message}\n")
@@ -300,7 +308,8 @@ def run_daemon() -> None:
             pass
         return addr_to_user
 
-    _write_log("Traffic daemon started")
+    last_summary_at = 0.0
+    last_api_error_at = 0.0
 
     while True:
         try:
@@ -322,7 +331,11 @@ def run_daemon() -> None:
                 with urllib.request.urlopen(req, timeout=5) as response:
                     body = response.read().decode("utf-8")
                     data = json.loads(body)
-            except urllib.error.URLError:
+            except urllib.error.URLError as exc:
+                now = time.monotonic()
+                if now - last_api_error_at >= 60:
+                    _write_log(f"Clash API unavailable: {exc}")
+                    last_api_error_at = now
                 time.sleep(10)
                 continue
             except Exception as e:
@@ -335,10 +348,32 @@ def run_daemon() -> None:
             trusttunnel_users = _get_trusttunnel_users()
             mieru_users = _get_mieru_users()
             shadowtls_users = _get_shadowtls_users()
-            update_state(lambda latest: _apply_connection_snapshot(
+            state, counters_updated = update_state(lambda latest: _apply_connection_snapshot(
                 latest, connections, anytls_ports, trusttunnel_users, mieru_users,
                 shadowtls_users,
             ))
+            now = time.monotonic()
+            if now - last_summary_at >= 300:
+                active = state.install.get("traffic_connection_counters", {})
+                active_records = [
+                    record for record in active.values()
+                    if int(record.get("missed_polls", 0)) == 0
+                ]
+                attributed = sum(
+                    bool(record.get("user")) and record.get("protocol") != "unknown"
+                    for record in active_records
+                )
+                active_bytes = sum(
+                    max(0, int(record.get("upload", 0)))
+                    + max(0, int(record.get("download", 0)))
+                    for record in active_records
+                )
+                _write_log(
+                    "Traffic snapshot: "
+                    f"connections={len(active_records)}, attributed={attributed}, "
+                    f"active_bytes={active_bytes}, counters_updated={str(counters_updated).lower()}"
+                )
+                last_summary_at = now
 
         except Exception as e:
             _write_log(f"General error: {e}")

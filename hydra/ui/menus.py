@@ -1837,18 +1837,13 @@ def _show_traffic_combined(state: AppState):
         legacy_unattributed = max(0, user_total - attributed_user_total)
         protocol_total = sum(by_protocol.values())
         total_traffic = protocol_total + legacy_unattributed
-        unattributed_total = sum(aggregate_totals.values()) + legacy_unattributed
         active_users = sum(not user.blocked for user in state.users)
         limited_users = sum(user.traffic_limit_gb > 0 for user in state.users)
 
         panel("📊 Сводка трафика", [
             kv("Всего учтено:", f"{BOLD}{CYAN}{_bytes_auto(total_traffic)}{NC}"),
-            kv("По пользователям:", f"{GREEN}{_bytes_auto(user_total)}{NC}"),
-            kv("Только общий учёт:", (
-                f"{YELLOW}{_bytes_auto(unattributed_total)}{NC}"
-                if unattributed_total else f"{DIM}0 B{NC}"
-            )),
-            kv("Пользователи:", f"{active_users} активны · {limited_users} с лимитом · {len(state.users)} всего"),
+            kv("Пользователи:", f"{active_users} активны / {len(state.users)} всего"),
+            kv("С лимитом:", str(limited_users)),
         ])
 
         print()
@@ -1870,11 +1865,9 @@ def _show_traffic_combined(state: AppState):
                 f"  {'Старая статист.':<15} {YELLOW}{_bytes_auto(legacy_unattributed):>12}{NC}  "
                 f"{share_bar(legacy_unattributed, total_traffic):<18} {DIM}без разбивки{NC}"
             )
-        print(f"  {DIM}{'─' * 77}{NC}")
-        print(f"  {BOLD}{'ИТОГО':<15} {CYAN}{_bytes_auto(total_traffic):>12}{NC}")
         print()
         
-        print(f"  {BOLD}По пользователям{NC}  {DIM}({user_total and _bytes_auto(user_total) or '0 B'}){NC}")
+        print(f"  {BOLD}По пользователям{NC}")
         users_sorted = list(state.users)
         if not show_zero_users:
             users_sorted = [user for user in users_sorted if user.traffic_used_bytes > 0]
@@ -1925,7 +1918,7 @@ def _show_traffic_combined(state: AppState):
             print(f"  {DIM}Нет пользователей с ненулевым трафиком.{NC}")
         print(f"  {DIM}{'─' * 77}{NC}")
         shown = len(users_sorted)
-        print(f"  {DIM}Показано: {shown}/{len(state.users)} · общий трафик qWDTT не распределяется по пользователям{NC}")
+        print(f"  {DIM}Показано: {shown}/{len(state.users)}{NC}")
         print()
 
         sort_labels = {
@@ -1938,7 +1931,7 @@ def _show_traffic_combined(state: AppState):
             ("3", f"{'✓ ' if sort_by == 'limit' else ''}Сортировать по лимиту", ""),
             ("4", f"{'✓ ' if sort_by == 'expiry' else ''}Сортировать по сроку", ""),
             ("Z", "Показать всех пользователей" if not show_zero_users else "Скрыть пользователей без трафика", ""),
-            ("D", "🔍 Статистика пользователя", "Без UUID, ссылок и секретов"),
+            ("D", "🔍 Статистика пользователя", ""),
             ("0", "↩ Назад", "")
         ], f"УПРАВЛЕНИЕ · {sort_labels[sort_by].upper()}")
         
@@ -2268,6 +2261,11 @@ def _show_realtime_sys_monitor():
 def _menu_logs(state: AppState):
     lines_count = 30
     while True:
+        try:
+            from hydra.services.traffic_daemon import maintain_traffic_log
+            maintain_traffic_log()
+        except Exception:
+            pass
         clear()
         title("📋 Просмотр системных логов")
         print()

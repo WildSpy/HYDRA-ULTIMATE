@@ -217,6 +217,11 @@ WantedBy=multi-user.target
             pass
 
 
+def reconcile_traffic_daemon(state: AppState) -> None:
+    """Reconcile the daemon after a code update without rebuilding networking."""
+    _manage_traffic_daemon(state)
+
+
 
 def install_plugin(state: AppState, name: str) -> bool:
     p = registry.get(name)
