@@ -370,7 +370,10 @@ class ShadowTLSPlugin(BasePlugin):
 
     @staticmethod
     def _derive_trojan_password(uuid: str) -> str:
-        return derive_hex_key("shadowtls-trojan-pass", uuid)
+        # Keep the inner credential compatible with already applied server
+        # configs. ShadowTLS and Trojan authenticate different protocol layers,
+        # so sharing this derived secret is valid and avoids silent rotations.
+        return derive_hex_key("shadowtls-pass", uuid)
 
     @staticmethod
     def _normalized_host(value: str) -> str:

@@ -83,8 +83,8 @@ def test_configure_users_in_inbounds():
     assert "b@x.com" in names_trojan
 
 
-def test_shadowtls_and_trojan_use_independent_passwords():
-    """The transport and the inner proxy are separate authentication layers."""
+def test_shadowtls_and_trojan_credentials_stay_server_compatible():
+    """Client credentials must not rotate independently of applied config."""
     p = ShadowTLSPlugin()
     user = _user("a@x.com", uuid="uuid-a")
     state = _state([user])
@@ -96,7 +96,7 @@ def test_shadowtls_and_trojan_use_independent_passwords():
     stls_out = next(o for o in client["outbounds"] if o["type"] == "shadowtls")
     trojan_out = next(o for o in client["outbounds"] if o["type"] == "trojan")
 
-    assert stls["users"][0]["password"] != trojan["users"][0]["password"]
+    assert stls["users"][0]["password"] == trojan["users"][0]["password"]
     assert stls_out["password"] == stls["users"][0]["password"]
     assert trojan_out["password"] == trojan["users"][0]["password"]
 
