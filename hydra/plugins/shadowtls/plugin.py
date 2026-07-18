@@ -93,7 +93,7 @@ class ShadowTLSPlugin(BasePlugin):
             "type": "trojan",
             "tag": "shadowtls-trojan-in",
             "listen": "127.0.0.1",
-            "listen_port": 20447,  # Hardcoded internal detour port
+            "listen_port": 0,  # Listen port 0 = only via detour
             "users": users_trojan,
         }
 
@@ -374,7 +374,7 @@ class ShadowTLSPlugin(BasePlugin):
 
     @staticmethod
     def _derive_trojan_password(uuid: str) -> str:
-        return derive_hex_key("shadowtls-trojan-pass", uuid)
+        return derive_hex_key("shadowtls-pass", uuid)
 
     def _remove_iptables_rules(self) -> None:
         for chain in ("INPUT", "OUTPUT"):

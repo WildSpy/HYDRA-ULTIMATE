@@ -58,7 +58,7 @@ def test_configure_returns_inbound():
 
     assert trojan["tag"] == "shadowtls-trojan-in"
     assert trojan["listen"] == "127.0.0.1"
-    assert trojan["listen_port"] == 20447
+    assert trojan["listen_port"] == 0
 
 
 def test_configure_users_in_inbounds():
