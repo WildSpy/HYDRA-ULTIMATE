@@ -14,18 +14,55 @@ from pathlib import Path
 from hydra.core.state import AppState, load_state, update_state
 
 
+TRAFFIC_LOG = Path("/var/log/hydra/traffic-daemon.log")
+TRAFFIC_LOG_BACKUP = Path("/var/log/hydra/traffic-daemon.log.1")
+TRAFFIC_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def maintain_traffic_log() -> None:
+    """Compact an oversized legacy log while preserving its recent tail."""
+    try:
+        TRAFFIC_LOG.parent.mkdir(parents=True, exist_ok=True)
+        if TRAFFIC_LOG.exists() and TRAFFIC_LOG.stat().st_size >= TRAFFIC_LOG_MAX_BYTES:
+            # Old versions could grow this file indefinitely. Preserve only
+            # the most recent bounded tail instead of renaming a huge file.
+            with TRAFFIC_LOG.open("rb") as handle:
+                handle.seek(-min(TRAFFIC_LOG.stat().st_size, TRAFFIC_LOG_MAX_BYTES), 2)
+                tail = handle.read()
+            newline = tail.find(b"\n")
+            if newline >= 0:
+                tail = tail[newline + 1:]
+            TRAFFIC_LOG_BACKUP.write_bytes(tail)
+            TRAFFIC_LOG.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _write_log(message: str) -> None:
+    """Append one traffic event while keeping the custom log bounded."""
+    try:
+        maintain_traffic_log()
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with TRAFFIC_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message}\n")
+    except OSError:
+        pass
+
+
 def _apply_connection_snapshot(
     state: AppState,
     connections: list[dict],
     anytls_ports: dict[str, str],
     trusttunnel_users: dict[tuple[str, str], str | None],
     mieru_users: dict[tuple[str, str], str],
+    shadowtls_users: dict[tuple[str, str], str | None] | None = None,
 ) -> bool:
     """Atomically apply connection deltas using counters persisted in AppState."""
     state.install["traffic_daemon_last_poll"] = time.time()
     active = state.install.setdefault("traffic_connection_counters", {})
     current_ids: set[str] = set()
     deltas: dict[tuple[str, str], int] = {}
+    shadowtls_users = shadowtls_users or {}
 
     for connection in connections:
         connection_id = connection.get("id")
@@ -43,10 +80,26 @@ def _apply_connection_snapshot(
             host = metadata.get("host") or metadata.get("destinationIP", "")
             user = user or trusttunnel_users.get(("__id__", str(connection_id)))
             user = user or trusttunnel_users.get((host.lower(), str(metadata.get("destinationPort", ""))))
+        elif "shadowtls" in inbound_tag:
+            protocol = "shadowtls"
+            host = metadata.get("host") or metadata.get("destinationIP", "")
+            user = user or shadowtls_users.get(("__id__", str(connection_id)))
+            user = user or shadowtls_users.get((host.lower(), str(metadata.get("destinationPort", ""))))
         elif "mieru" in inbound_tag:
             protocol = "mieru"
             key = (metadata.get("sourceIP", "").lower(), str(metadata.get("sourcePort", "")))
             user = user or mieru_users.get(key)
+        elif "hysteria2" in inbound_tag:
+            protocol = "hysteria2"
+        elif "snell-" in inbound_tag:
+            protocol = "snell"
+            if not user:
+                from hydra.plugins.snell.plugin import SnellPlugin
+                plugin = SnellPlugin()
+                for candidate in state.users:
+                    if plugin._tag(candidate) in inbound_tag:
+                        user = candidate.email
+                        break
         else:
             protocol = "unknown"
 
@@ -102,16 +155,6 @@ def _apply_connection_snapshot(
     return changed
 
 def run_daemon() -> None:
-    def _log(msg: str) -> None:
-        try:
-            log_path = Path("/var/log/hydra/traffic-daemon.log")
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write(f"[{ts}] {msg}\n")
-        except Exception:
-            pass
-
     def _get_anytls_ports() -> dict[str, str]:
         import subprocess
         import re
@@ -188,6 +231,45 @@ def run_daemon() -> None:
             pass
         return addr_to_user
 
+    def _get_shadowtls_users() -> dict[tuple[str, str], str | None]:
+        """Map Trojan detour connections back to authenticated ShadowTLS users."""
+        import subprocess
+        import re
+
+        addr_to_user: dict[tuple[str, str], str | None] = {}
+        try:
+            result = subprocess.run(
+                ["journalctl", "-u", "sing-box", "-n", "1000", "--no-pager"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode != 0:
+                return addr_to_user
+            for line in result.stdout.splitlines():
+                if "shadowtls" not in line.lower():
+                    continue
+                match = re.search(
+                    r"inbound/(?:shadowtls|trojan)\[[^\]]*shadowtls[^\]]*\]:\s+"
+                    r"\[([^\]]+)\]\s+inbound connection to\s+"
+                    r"([a-zA-Z0-9\-\._]+|\[[0-9a-fA-F:]+\]):(\d+)",
+                    line,
+                    re.IGNORECASE,
+                )
+                if not match:
+                    continue
+                user, host, port = match.groups()
+                connection_id = re.search(r"INFO\s+\[(\d+)\s+[^\]]+\]", line)
+                if connection_id:
+                    addr_to_user[("__id__", connection_id.group(1))] = user
+                key = (host.lower(), port)
+                previous = addr_to_user.get(key)
+                if previous is not None and previous != user:
+                    addr_to_user[key] = None
+                elif key not in addr_to_user:
+                    addr_to_user[key] = user
+        except Exception:
+            pass
+        return addr_to_user
+
     def _get_mieru_users() -> dict[tuple[str, str], str]:
         import subprocess
         import re
@@ -237,7 +319,8 @@ def run_daemon() -> None:
             pass
         return addr_to_user
 
-    _log("Traffic daemon started")
+    last_summary_at = 0.0
+    last_api_error_at = 0.0
 
     while True:
         try:
@@ -259,11 +342,15 @@ def run_daemon() -> None:
                 with urllib.request.urlopen(req, timeout=5) as response:
                     body = response.read().decode("utf-8")
                     data = json.loads(body)
-            except urllib.error.URLError:
+            except urllib.error.URLError as exc:
+                now = time.monotonic()
+                if now - last_api_error_at >= 60:
+                    _write_log(f"Clash API unavailable: {exc}")
+                    last_api_error_at = now
                 time.sleep(10)
                 continue
             except Exception as e:
-                _log(f"API query error: {e}")
+                _write_log(f"API query error: {e}")
                 time.sleep(10)
                 continue
 
@@ -271,12 +358,36 @@ def run_daemon() -> None:
             anytls_ports = _get_anytls_ports()
             trusttunnel_users = _get_trusttunnel_users()
             mieru_users = _get_mieru_users()
-            update_state(lambda latest: _apply_connection_snapshot(
+            shadowtls_users = _get_shadowtls_users()
+            state, counters_updated = update_state(lambda latest: _apply_connection_snapshot(
                 latest, connections, anytls_ports, trusttunnel_users, mieru_users,
+                shadowtls_users,
             ))
+            now = time.monotonic()
+            if now - last_summary_at >= 300:
+                active = state.install.get("traffic_connection_counters", {})
+                active_records = [
+                    record for record in active.values()
+                    if int(record.get("missed_polls", 0)) == 0
+                ]
+                attributed = sum(
+                    bool(record.get("user")) and record.get("protocol") != "unknown"
+                    for record in active_records
+                )
+                active_bytes = sum(
+                    max(0, int(record.get("upload", 0)))
+                    + max(0, int(record.get("download", 0)))
+                    for record in active_records
+                )
+                _write_log(
+                    "Traffic snapshot: "
+                    f"connections={len(active_records)}, attributed={attributed}, "
+                    f"active_bytes={active_bytes}, counters_updated={str(counters_updated).lower()}"
+                )
+                last_summary_at = now
 
         except Exception as e:
-            _log(f"General error: {e}")
+            _write_log(f"General error: {e}")
 
         time.sleep(2)
 

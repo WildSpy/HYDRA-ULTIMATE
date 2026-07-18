@@ -1,8 +1,9 @@
-"""Monotonic per-user traffic accounting.
+"""Monotonic per-user and protocol-wide traffic accounting.
 
 Live plugin counters are snapshots and may reset after a restart or log rotation.
-This module converts those snapshots to deltas and keeps the authoritative,
-monotonic totals in per-protocol user credentials.
+This module converts those snapshots to deltas and keeps authoritative totals
+in per-user credentials or aggregate protocol counters when attribution is not
+technically reliable (for example qWDTT).
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from hydra.plugins.registry import enabled, get
 
 
 _SNAPSHOT_PROTOCOLS = ("amneziawg", "telemt")
+_AGGREGATE_SNAPSHOT_PROTOCOLS = ("wdtt",)
 
 
 def _as_non_negative_int(value: object) -> int:
@@ -43,6 +45,22 @@ def _accumulate_snapshot(state: AppState, protocol: str,
         stats["traffic_used_bytes"] = accumulated
 
 
+def _accumulate_protocol_total(state: AppState, protocol: str, raw_value: object) -> None:
+    """Convert a resettable protocol-wide counter to a monotonic total."""
+    raw = _as_non_negative_int(raw_value)
+    protocols = state.install.setdefault("protocol_traffic_totals", {})
+    stats = protocols.setdefault(protocol, {})
+    previous_raw = stats.get("traffic_last_raw_bytes")
+    accumulated = _as_non_negative_int(stats.get("traffic_used_bytes", 0))
+    if previous_raw is None:
+        accumulated = max(accumulated, raw)
+    else:
+        previous_raw = _as_non_negative_int(previous_raw)
+        accumulated += raw - previous_raw if raw >= previous_raw else raw
+    stats["traffic_last_raw_bytes"] = raw
+    stats["traffic_used_bytes"] = accumulated
+
+
 def refresh_user_traffic(state: AppState) -> dict[str, int]:
     """Refresh resettable sources and rebuild authoritative user totals."""
     enabled_names = {plugin.meta.name for plugin in enabled(state)}
@@ -57,6 +75,22 @@ def refresh_user_traffic(state: AppState) -> dict[str, int]:
             _accumulate_snapshot(state, protocol, plugin.traffic(state))
         except Exception:
             # Keep the last good totals when a runtime counter is unavailable.
+            continue
+
+    for protocol in _AGGREGATE_SNAPSHOT_PROTOCOLS:
+        if protocol not in enabled_names:
+            continue
+        plugin = get(protocol)
+        reader = getattr(plugin, "total_traffic", None) if plugin else None
+        if reader is None:
+            continue
+        try:
+            raw = reader(state)
+            if raw is not None:
+                _accumulate_protocol_total(state, protocol, raw)
+        except Exception:
+            # Preserve the last good aggregate when the interface disappears
+            # briefly during a service restart.
             continue
 
     # Naive uses an inode/offset cursor because its access log is rotated.
@@ -110,6 +144,14 @@ def protocol_totals(state: AppState) -> dict[str, int]:
             used = _as_non_negative_int(stats.get("traffic_used_bytes", 0))
             if used:
                 totals[protocol] = totals.get(protocol, 0) + used
+    for protocol, stats in state.install.get("protocol_traffic_totals", {}).items():
+        if not isinstance(stats, dict):
+            continue
+        used = _as_non_negative_int(stats.get("traffic_used_bytes", 0))
+        if used:
+            # Aggregate-only accounting must not be added twice if a protocol
+            # gains reliable per-user attribution in the future.
+            totals[protocol] = max(totals.get(protocol, 0), used)
     return totals
 
 

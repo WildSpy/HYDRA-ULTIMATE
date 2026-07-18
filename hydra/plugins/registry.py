@@ -16,12 +16,18 @@ from hydra.plugins.warp.plugin import WarpPlugin
 from hydra.plugins.fail2ban.plugin import Fail2banPlugin
 from hydra.plugins.honeypot.plugin import HoneypotPlugin
 from hydra.plugins.ipban.plugin import IPBanPlugin
+from hydra.plugins.shadowtls.plugin import ShadowTLSPlugin
+from hydra.plugins.hysteria2.plugin import Hysteria2Plugin
+from hydra.plugins.snell.plugin import SnellPlugin
 from hydra.core.state import AppState
 
 _PLUGINS: list[BasePlugin] = [
     AmneziaWGPlugin(),
     AnyTLSPlugin(),
     TrustTunnelPlugin(),
+    ShadowTLSPlugin(),
+    Hysteria2Plugin(),
+    SnellPlugin(),
     MieruPlugin(),
     NaivePlugin(),
     TelemtPlugin(),
@@ -106,13 +112,25 @@ def status_all() -> dict[str, dict]:
     """Возвращает {name: {running, installed, port, enabled}} для всех плагинов."""
     result: dict[str, dict] = {}
     for p in _PLUGINS:
-        s = p.status()
-        result[p.meta.name] = {
-            "running": s.running,
-            "installed": s.installed,
-            "port": s.port,
-            "enabled": s.enabled,
-        }
+        try:
+            s = p.status()
+            result[p.meta.name] = {
+                "running": s.running,
+                "installed": s.installed,
+                "port": s.port,
+                "enabled": s.enabled,
+                "error": "",
+            }
+        except Exception as exc:
+            # A broken optional service must not make the whole protocol
+            # dashboard unusable.  Its own card will expose the failure.
+            result[p.meta.name] = {
+                "running": False,
+                "installed": False,
+                "port": 0,
+                "enabled": False,
+                "error": str(exc) or exc.__class__.__name__,
+            }
     return result
 
 

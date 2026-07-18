@@ -2,7 +2,9 @@ from unittest.mock import MagicMock, patch
 
 from hydra.core.state import AppState, PluginState, User
 from hydra.services.active_connections import tracked_active_connections
-from hydra.services.traffic import refresh_user_traffic, check_traffic_limits
+from hydra.services.traffic import (
+    refresh_user_traffic, check_traffic_limits, protocol_totals,
+)
 
 
 def test_resettable_snapshot_is_accumulated_monotonically():
@@ -24,6 +26,24 @@ def test_resettable_snapshot_is_accumulated_monotonically():
 
     assert user.credentials["amneziawg"]["traffic_used_bytes"] == 170
     assert user.traffic_used_bytes == 170
+
+
+def test_qwdtt_aggregate_is_monotonic_without_per_user_attribution():
+    state = AppState(protocols={"wdtt": PluginState(enabled=True)})
+    plugin = MagicMock()
+    plugin.meta.name = "wdtt"
+    plugin.total_traffic.side_effect = [100, 150, 20, None, 40]
+
+    with patch("hydra.services.traffic.enabled", return_value=[plugin]), \
+         patch("hydra.services.traffic.get", return_value=plugin):
+        for _ in range(5):
+            refresh_user_traffic(state)
+
+    stats = state.install["protocol_traffic_totals"]["wdtt"]
+    assert stats["traffic_used_bytes"] == 190
+    assert stats["traffic_last_raw_bytes"] == 40
+    assert protocol_totals(state)["wdtt"] == 190
+    assert state.users == []
 
 
 def test_limit_is_reached_at_exact_boundary():
@@ -58,3 +78,27 @@ def test_active_connections_group_only_current_attributed_sessions():
     assert rows[0]["rx"] == 150
     assert rows[0]["tx"] == 30
     assert rows[0]["connections"] == 2
+
+
+def test_active_connections_include_attributed_shadowtls_sessions():
+    state = AppState()
+    state.network.clash_api_enabled = True
+    import time
+    state.install["traffic_daemon_last_poll"] = time.time()
+    state.install["traffic_connection_counters"] = {
+        "shadow": {
+            "user": "shadow@example.com",
+            "protocol": "shadowtls",
+            "download": 480,
+            "upload": 120,
+            "missed_polls": 0,
+            "seen_at": time.time(),
+        },
+    }
+
+    rows = tracked_active_connections(state)
+    assert len(rows) == 1
+    assert rows[0]["plugin"] == "shadowtls"
+    assert rows[0]["email"] == "shadow@example.com"
+    assert rows[0]["rx"] == 480
+    assert rows[0]["tx"] == 120

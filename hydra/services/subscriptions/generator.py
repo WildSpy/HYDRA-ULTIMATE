@@ -3,8 +3,9 @@ hydra/services/subscriptions/generator.py — Генератор подписо�
 
 Форматы:
   • Base64 (для v2rayNG, Shadowrocket, Hiddify)
-  • Sing-Box JSON (для NekoBox, Karing)
-  • NekoBox sn:// ссылки для NaiveProxy, AnyTLS, TrustTunnel, Mieru, AmneziaWG
+  • Sing-Box JSON (для совместимых клиентов)
+  • NekoBox sn:// ссылки, включая атомарный Trojan-over-ShadowTLS config
+  • Throne custom config для ShadowTLS и TrustTunnel QUIC
 
 Динамически собирает ссылки/конфиги со всех включённых TRANSPORT-плагинов
 через их v2-методы client_link() и generate_client_config().
@@ -61,6 +62,21 @@ def _awg_serialize_len(length: int) -> bytes:
 
 def _awg_serialize_string_len(s: str) -> bytes:
     return _awg_serialize_len(len(s)) + s.encode('utf-8')
+
+
+def serialize_nekobox_config(config: str, name: str) -> str:
+    """Serialize a full sing-box config as NekoBox's native ConfigBean link."""
+    data = struct.pack('<I', 0)  # ConfigBean version
+    data += _awg_serialize_string("127.0.0.1")
+    data += struct.pack('<I', 1080)
+    data += struct.pack('<I', 0)  # ConfigBean type: full config
+    data += _awg_serialize_string_len(config)
+    data += struct.pack('<I', 1)  # AbstractBean extra fields version
+    data += _awg_serialize_string(name)
+    data += b'\x81\x81'  # empty, non-null custom outbound/config JSON
+    compressed = zlib.compress(data, 9)
+    encoded = base64.urlsafe_b64encode(compressed).decode('ascii').rstrip('=')
+    return f"sn://config?{encoded}"
 
 
 def serialize_naive(server: str, port: int, network: str, username: str, password: str, sni: str, fingerprint: str, name: str) -> str:
@@ -260,6 +276,9 @@ def clean_link_to_sn(link: str, user: User) -> Optional[str]:
         elif scheme == "anytls":
             return None
             
+        elif scheme == "shadowtls":
+            return None
+            
         # 3. TrustTunnel (NekoBox does NOT support tt:// natively, needs sn://trusttunnel)
         elif scheme in ("tt", "trusttunnel"):
             netloc = parsed.netloc
@@ -272,6 +291,9 @@ def clean_link_to_sn(link: str, user: User) -> Optional[str]:
             
             query = urllib.parse.parse_qs(parsed.query)
             sni = query.get("sni", [host])[0]
+            if query.get("alpn", ["h2"])[0] == "h3":
+                # QUIC is not represented by NekoBox's TrustTunnelBean link.
+                return None
             
             return serialize_trusttunnel(host, port, username, password, sni, fragment)
             
@@ -308,6 +330,8 @@ def generate_links(user: User, state: AppState) -> list[str]:
     """Собирает ссылки со всех включённых TRANSPORT-плагинов."""
     links: list[str] = []
     for p in enabled(state, PluginCategory.TRANSPORT):
+        if p.meta.name == "wdtt":
+            continue
         try:
             if p.meta.name == "amneziawg":
                 profiles = p.get_profiles(state)
@@ -316,15 +340,19 @@ def generate_links(user: User, state: AppState) -> list[str]:
                     if link:
                         links.append(link)
             elif hasattr(p, "client_links"):
-                multi = p.client_links(user, state)
-                links.extend(multi)
+                multi = p.client_links(user, state) or []
+                links.extend(link for link in multi if link)
             else:
                 link = p.client_link(user, state)
                 if link:
                     links.append(link)
         except Exception:
             pass
-    return links
+
+    # Некоторые плагины возвращают основную ссылку и ту же ссылку в наборе
+    # вариантов. Подписка должна быть стабильной и не создавать дубликаты
+    # профилей в клиенте при каждом обновлении.
+    return list(dict.fromkeys(links))
 
 
 def generate_base64_sub(user: User, state: AppState) -> str:
@@ -356,6 +384,14 @@ def generate_base64_sub(user: User, state: AppState) -> str:
                     proto_suffix = "TrustTunnel"
             elif scheme == "mierus":
                 proto_suffix = "Mieru"
+            elif scheme in ("hysteria2", "hy2"):
+                proto_suffix = "Hysteria2"
+            elif scheme == "snell":
+                proto_suffix = "Snell"
+            elif scheme == "trojan":
+                query = urllib.parse.parse_qs(parsed.query)
+                if "plugin" in query and "shadow-tls" in query["plugin"]:
+                    proto_suffix = "ShadowTLS"
                 
             if proto_suffix:
                 # Обновляем фрагмент (тэг) ссылки
@@ -393,6 +429,209 @@ def generate_base64_sub(user: User, state: AppState) -> str:
             
     payload = "\n".join(extended_links) + "\n"
     return base64.b64encode(payload.encode("utf-8")).decode("utf-8")
+
+
+def _links_without_custom_configs(user: User, state: AppState) -> list[str]:
+    payload = base64.b64decode(generate_base64_sub(user, state)).decode("utf-8")
+    links = []
+    for link in payload.splitlines():
+        parsed = urllib.parse.urlparse(link)
+        query = urllib.parse.parse_qs(parsed.query)
+        is_shadowtls_trojan = (
+            parsed.scheme == "trojan"
+            and "shadow-tls" in query.get("plugin", [])
+        )
+        is_trusttunnel_quic = (
+            parsed.scheme in ("tt", "trusttunnel")
+            and query.get("alpn", ["h2"])[0] == "h3"
+        )
+        if link and not is_shadowtls_trojan and not is_trusttunnel_quic:
+            links.append(link)
+    return links
+
+
+def _shadowtls_client_config(user: User, state: AppState) -> Optional[dict]:
+    """Return the atomic Trojan-over-ShadowTLS config, if the plugin is enabled."""
+    shadowtls = next(
+        (p for p in enabled(state, PluginCategory.TRANSPORT) if p.meta.name == "shadowtls"),
+        None,
+    )
+    if not shadowtls:
+        return None
+    return json.loads(shadowtls.generate_client_config(user, state))
+
+
+def _trusttunnel_quic_client_config(user: User, state: AppState) -> Optional[dict]:
+    """Return a standalone TrustTunnel QUIC config, including in `both` mode."""
+    plugin = next(
+        (p for p in enabled(state, PluginCategory.TRANSPORT) if p.meta.name == "trusttunnel"),
+        None,
+    )
+    if not plugin:
+        return None
+
+    source = json.loads(plugin.generate_client_config(user, state))
+    quic_outbound = next(
+        (
+            outbound for outbound in source.get("outbounds", [])
+            if outbound.get("type") == "trusttunnel" and outbound.get("quic") is True
+        ),
+        None,
+    )
+    if not quic_outbound:
+        return None
+
+    direct = next(
+        (outbound for outbound in source.get("outbounds", []) if outbound.get("tag") == "direct"),
+        {"type": "direct", "tag": "direct"},
+    )
+    source["outbounds"] = [quic_outbound, direct]
+    source["route"] = {
+        "final": quic_outbound["tag"],
+        "auto_detect_interface": True,
+        "default_domain_resolver": "local",
+    }
+    return source
+
+
+def _add_mixed_inbound(config: dict) -> None:
+    config["inbounds"] = [{
+        "type": "mixed",
+        "tag": "mixed-in",
+        "listen": "127.0.0.1",
+        "listen_port": 2080,
+    }]
+
+
+def _pin_trusttunnel_quic_endpoint(config: dict, state: AppState) -> None:
+    """Use an IP endpoint for Throne's Windows QUIC dialer; keep TLS SNI intact."""
+    outbound = next(
+        (
+            item for item in config.get("outbounds", [])
+            if item.get("type") == "trusttunnel" and item.get("quic") is True
+        ),
+        None,
+    )
+    if not outbound:
+        return
+
+    endpoint = (state.network.server_ip or "").strip().strip("[]")
+    if not endpoint:
+        try:
+            endpoint = socket.gethostbyname(outbound.get("server", ""))
+        except (OSError, TypeError):
+            return
+    outbound["server"] = endpoint
+
+
+def _add_nekobox_inbounds(config: dict) -> None:
+    config.setdefault("route", {})["auto_detect_interface"] = True
+    config["inbounds"] = [
+        {
+            "type": "tun",
+            "tag": "tun-in",
+            "stack": "mixed",
+            "mtu": 9000,
+            "address": ["172.19.0.1/30"],
+            "endpoint_independent_nat": True,
+        },
+        {
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "127.0.0.1",
+            "listen_port": 2080,
+        },
+    ]
+
+
+def _throne_custom_link(config: dict, name: str, link_type: str) -> str:
+    wrapper = {
+        "type": "custom",
+        "name": name,
+        "subtype": "fullconfig",
+        "config": json.dumps(config, ensure_ascii=False, separators=(",", ":")),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return f"json://{link_type}#{encoded}"
+
+
+def generate_throne_sub(user: User, state: AppState) -> str:
+    """Build a Throne subscription with complex transports kept atomic."""
+    links = _links_without_custom_configs(user, state)
+
+    try:
+        config = _shadowtls_client_config(user, state)
+        if config:
+            _add_mixed_inbound(config)
+            links.append(_throne_custom_link(
+                config, f"{user.email} ShadowTLS", "shadowtls",
+            ))
+    except Exception:
+        pass
+
+    try:
+        config = _trusttunnel_quic_client_config(user, state)
+        if config:
+            _pin_trusttunnel_quic_endpoint(config, state)
+            _add_mixed_inbound(config)
+            links.append(_throne_custom_link(
+                config, f"{user.email} TrustTunnel QUIC", "trusttunnel-quic",
+            ))
+    except Exception:
+        pass
+
+    throne_payload = "\n".join(links) + "\n"
+    return base64.b64encode(throne_payload.encode("utf-8")).decode("ascii")
+
+
+def generate_nekobox_sub(user: User, state: AppState) -> str:
+    """Build a NekoBox subscription with complex transports kept atomic."""
+    links = _links_without_custom_configs(user, state)
+
+    try:
+        config = _shadowtls_client_config(user, state)
+        if config:
+            _add_nekobox_inbounds(config)
+            compact = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
+            links.append(serialize_nekobox_config(compact, f"{user.email} ShadowTLS"))
+    except Exception:
+        pass
+
+    try:
+        config = _trusttunnel_quic_client_config(user, state)
+        if config:
+            _add_nekobox_inbounds(config)
+            compact = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
+            links.append(serialize_nekobox_config(
+                compact, f"{user.email} TrustTunnel QUIC",
+            ))
+    except Exception:
+        pass
+
+    payload = "\n".join(links) + "\n"
+    return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def resolve_subscription_format(requested: Optional[str], user_agent: str = "") -> str:
+    """Resolve an explicit format or negotiate a client-specific subscription."""
+    if requested:
+        normalized = requested.lower()
+        if normalized not in ("auto", "default"):
+            return normalized
+
+    ua = user_agent.lower()
+    if "nekobox/android" in ua or "nekobox" in ua:
+        return "nekobox"
+    if "throne" in ua:
+        return "throne"
+    return "base64"
+
+
+SUPPORTED_SUBSCRIPTION_FORMATS = {
+    "base64", "nekobox", "throne", "singbox", "sing-box", "json",
+}
 
 
 def generate_userinfo_header(user: User, state: AppState) -> str:
@@ -434,19 +673,34 @@ def generate_singbox_config(user: User, state: AppState) -> dict:
         "route": {"rules": [], "auto_detect_interface": True},
     }
 
+    outbound_tags: set[str] = set()
+    selected_outbound = ""
+
     for p in enabled(state, PluginCategory.TRANSPORT):
+        if p.meta.name == "wdtt":
+            continue
         try:
             p_conf_str = p.generate_client_config(user, state)
             if p_conf_str:
                 p_conf = json.loads(p_conf_str)
-                if "outbounds" in p_conf:
-                    config["outbounds"].extend(p_conf["outbounds"])
+                for outbound in p_conf.get("outbounds", []):
+                    tag = outbound.get("tag", "")
+                    if tag and tag in outbound_tags:
+                        continue
+                    config["outbounds"].append(outbound)
+                    if tag:
+                        outbound_tags.add(tag)
+                    if not selected_outbound and outbound.get("type") != "direct":
+                        selected_outbound = tag
                 if "route" in p_conf and "rules" in p_conf["route"]:
                     config["route"]["rules"].extend(p_conf["route"]["rules"])
         except Exception:
             pass
 
-    config["outbounds"].append({"type": "direct", "tag": "direct"})
+    if "direct" not in outbound_tags:
+        config["outbounds"].append({"type": "direct", "tag": "direct"})
+    if selected_outbound:
+        config["route"]["final"] = selected_outbound
     return config
 
 
@@ -463,13 +717,30 @@ def generate_client_config(user: User, state: AppState, protocol: str) -> str:
 
 def get_subscription_url(user: User, state: AppState) -> str:
     """Возвращает ссылку на подписку (учитывая sub_domain для скрытия порта)."""
+    token = urllib.parse.quote(str(user.uuid), safe="")
     sub_domain = getattr(state.network, "sub_domain", "")
     if sub_domain:
-        return f"https://{sub_domain}/sub/{user.uuid}"
+        return f"https://{sub_domain}/sub/{token}"
     
     from hydra.utils.net import public_ip
     host = state.network.domain or state.network.server_ip or public_ip()
-    return f"https://{host}:9443/sub/{user.uuid}"
+    return f"https://{host}:9443/sub/{token}"
+
+
+def get_subscription_urls(user: User, state: AppState) -> dict[str, str]:
+    """Возвращает канонические URL без ручной конкатенации query-параметров."""
+    base = get_subscription_url(user, state)
+
+    def with_format(value: str) -> str:
+        separator = "&" if "?" in base else "?"
+        return f"{base}{separator}format={urllib.parse.quote(value, safe='')}"
+
+    return {
+        "auto": base,
+        "nekobox": with_format("nekobox"),
+        "throne": with_format("throne"),
+        "singbox": with_format("singbox"),
+    }
 
 # ── SSL и Сертификаты ─────────────────────────────────────────────────────────
 
@@ -514,11 +785,8 @@ def find_any_cert(state: AppState) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def is_user_valid(user: User, state: AppState) -> bool:
-    """Проверяет лимиты трафика и времени пользователя в реальном времени."""
-    if user.blocked:
-        return False
-        
+def get_user_entitlement_status(user: User) -> tuple[bool, str]:
+    """Проверяет срок и квоту независимо от ручной блокировки."""
     # Проверка даты окончания
     if user.expiry_date:
         try:
@@ -526,18 +794,32 @@ def is_user_valid(user: User, state: AppState) -> bool:
             expiry = datetime.fromisoformat(user.expiry_date)
             if expiry.tzinfo is None:
                 expiry = expiry.replace(tzinfo=timezone.utc)
-            if expiry < datetime.now(timezone.utc):
-                return False
-        except Exception:
-            pass
+            if expiry <= datetime.now(timezone.utc):
+                return False, "срок истёк"
+        except (TypeError, ValueError):
+            return False, "ошибка даты"
             
     # Проверка лимита трафика
     if user.traffic_limit_gb:
         limit_bytes = int(user.traffic_limit_gb * 1073741824)
         if user.traffic_used_bytes >= limit_bytes:
-            return False
-            
-    return True
+            return False, "лимит исчерпан"
+
+    return True, "активен"
+
+
+def get_user_access_status(user: User) -> tuple[bool, str]:
+    """Возвращает доступность подписки и понятную причину ограничения."""
+    if user.blocked:
+        entitled, reason = get_user_entitlement_status(user)
+        return False, reason if not entitled else "заблокирован"
+    return get_user_entitlement_status(user)
+
+
+def is_user_valid(user: User, state: AppState) -> bool:
+    """Проверяет лимиты трафика и времени пользователя в реальном времени."""
+    valid, _ = get_user_access_status(user)
+    return valid
 
 
 # ── HTTP Server ───────────────────────────────────────────────────────────────
@@ -571,9 +853,17 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
         from hydra.core.state import load_state
         state = load_state()
 
-        path = self.path
-        if "?" in path:
-            path = path.split("?")[0]
+        parsed_request = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed_request.query)
+        requested_format = params.get("format", [None])[0]
+        response_format = resolve_subscription_format(
+            requested_format,
+            self.headers.get("User-Agent", ""),
+        )
+        if response_format not in SUPPORTED_SUBSCRIPTION_FORMATS:
+            self._send_error(400, "Unsupported subscription format")
+            return
+        path = parsed_request.path
         path = path.strip("/")
         parts = path.split("/")
         
@@ -582,8 +872,6 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
             token = parts[1]
         else:
             # Fallback для query-параметра ?token=...
-            parsed = urllib.parse.urlparse(self.path)
-            params = urllib.parse.parse_qs(parsed.query)
             token = params.get("token", [None])[0]
             
         if not token:
@@ -602,16 +890,35 @@ class SubscriptionHandler(BaseHTTPRequestHandler):
             self._send_error(403, "Invalid, expired or blocked token")
             return
             
-        content = generate_base64_sub(user, state)
+        if response_format == "nekobox":
+            content = generate_nekobox_sub(user, state)
+            content_type = "text/plain; charset=utf-8"
+            filename_suffix = "nekobox.txt"
+        elif response_format == "throne":
+            content = generate_throne_sub(user, state)
+            content_type = "text/plain; charset=utf-8"
+            filename_suffix = "throne.txt"
+        elif response_format in ("singbox", "sing-box", "json"):
+            content = json.dumps(
+                generate_singbox_config(user, state),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            content_type = "application/json; charset=utf-8"
+            filename_suffix = "singbox.json"
+        else:
+            content = generate_base64_sub(user, state)
+            content_type = "text/plain; charset=utf-8"
+            filename_suffix = "sub.txt"
+        safe_email = re.sub(r"[^A-Za-z0-9._@+-]+", "_", user.email).strip("._") or "user"
+        filename = f"hydra-{safe_email}-{filename_suffix}"
         userinfo = generate_userinfo_header(user, state)
         
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Disposition", f'attachment; filename="hydra-{user.email}-sub.txt"')
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Subscription-Userinfo", userinfo)
-        self.send_header("subscription-userinfo", userinfo)
         self.send_header("Profile-Update-Interval", "6")
-        self.send_header("profile-update-interval", "6")
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(content.encode("utf-8"))

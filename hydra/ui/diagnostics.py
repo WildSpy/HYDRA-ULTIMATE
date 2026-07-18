@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import json
+import ipaddress
 import shutil
 import subprocess
 import re
@@ -43,10 +44,9 @@ socket.getaddrinfo = filtered_getaddrinfo
 def check_system_ipv6() -> bool:
     """Быстрая проверка доступности IPv6 на уровне операционной системы."""
     try:
-        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(("2001:4860:4860::8888", 53))
-        s.close()
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(("2001:4860:4860::8888", 53))
         return True
     except Exception:
         return False
@@ -313,21 +313,20 @@ def run_direct_cmd(title_text: str, cmd: str):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def make_http_request(url: str, method: str = "GET", headers: dict = None, body: str = None, timeout: float = 2.0) -> str:
-    """Выполняет HTTP/HTTPS запрос с гибкими заголовками и отключенной валидацией SSL (для обхода перехватов)."""
-    if headers is None:
-        headers = {}
+    """Выполняет HTTP/HTTPS-запрос с проверкой подлинности TLS-сертификата."""
+    headers = dict(headers or {})
     if "User-Agent" not in headers:
         headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        
-    req = urllib.request.Request(url, headers=headers, method=method)
+
+    data = None
     if body:
-        req.data = body.encode("utf-8")
+        data = body.encode("utf-8")
         if "Content-Type" not in headers:
             headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, headers=headers, data=data, method=method)
             
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
@@ -354,7 +353,8 @@ def get_ip_address(version: int = 4) -> str:
                 req = urllib.request.Request(url, headers={"User-Agent": "curl/7.81.0"})
                 with urllib.request.urlopen(req, timeout=2.0) as resp:
                     ip = resp.read().decode("utf-8").strip()
-                    if ip and ("." in ip or ":" in ip):
+                    parsed_ip = ipaddress.ip_address(ip)
+                    if parsed_ip.version == version:
                         return ip
             except Exception:
                 continue
@@ -403,8 +403,6 @@ def query_primary_geoip(ip: str, service: str) -> str:
         return "—"
         
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
 
     _thread_local.ip_version = conn_ip_version
     try:
@@ -467,9 +465,9 @@ def query_primary_geoip(ip: str, service: str) -> str:
 
 def check_custom_service(service_name: str, ip_version: int, system_has_ipv6: bool) -> str:
     """Тестирует геоблокировку популярных стримингов и сервисов через указанную версию IP."""
-    _thread_local.ip_version = ip_version
     if ip_version == 6 and not system_has_ipv6:
         return "—"
+    _thread_local.ip_version = ip_version
         
     def find_key_nested(d, target_key):
         if isinstance(d, dict):
@@ -487,8 +485,6 @@ def check_custom_service(service_name: str, ip_version: int, system_has_ipv6: bo
         return None
 
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
         
     try:
         if service_name == "Google":
@@ -631,8 +627,6 @@ def check_domain_censor(domain: str, secure: bool = True) -> int:
     ctx = None
     if secure:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
         
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -736,6 +730,36 @@ def run_censorcheck_python(mode: str) -> dict:
     # Сортируем результаты по алфавиту для красоты
     results.sort(key=lambda x: x["service"])
     return {"results": results, "asn": asn}
+
+
+def classify_censor_status(http_status: int, https_status: int) -> tuple[str, str]:
+    """Классифицирует результат проверки без привязки к оформлению TUI."""
+    if 100 <= https_status < 400:
+        return "ok", "TLS"
+
+    error_labels = {
+        -6: "TLS/SSL",
+        -5: "REGIONAL",
+        -4: "DNS-SPOOF",
+        -3: "DNS",
+        -2: "DPI/RESET",
+        -1: "TCP/REFUSED",
+    }
+    if https_status in error_labels:
+        return "blocked", error_labels[https_status]
+
+    if https_status in (403, 451):
+        return "blocked", f"HTTP {https_status}"
+
+    http_available = 100 <= http_status < 400
+    if https_status == 0:
+        if http_available:
+            return "partial", "HTTPS TIMEOUT; HTTP OK"
+        return "blocked", "TIMEOUT"
+
+    if http_available:
+        return "partial", f"HTTPS {https_status}; HTTP OK"
+    return "blocked", f"HTTP {https_status}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -902,10 +926,9 @@ def test_ip_region():
 
 def is_port_listening(port: int) -> bool:
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.bind(("127.0.0.1", port))
-        s.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.bind(("127.0.0.1", port))
         return False
     except OSError:
         return True
@@ -975,8 +998,6 @@ def run_tspu_radar(target_ip: str, sni: str) -> dict:
     }
     
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     
     try:
         req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), 
@@ -1056,7 +1077,7 @@ def run_tspu_radar(target_ip: str, sni: str) -> dict:
 def test_censorcheck(mode: str):
     """Тест 2 и 3. Censorcheck (проверка гео-блокировок или обхода DPI)"""
     clear()
-    mode_title = "Гео-блокировки" if mode == "geoblock" else "DPI РФ"
+    mode_title = "Гео-блокировки с VPS" if mode == "geoblock" else "Исходящая доступность с VPS"
     title(f"Тестирование: {mode_title}")
     print()
     
@@ -1086,56 +1107,19 @@ def test_censorcheck(mode: str):
             http_status = http.get("ipv4", {}).get("status", 0)
             https_status = https.get("ipv4", {}).get("status", 0)
             
-            if https_status > 0 and https_status != 403:
+            classification, reason = classify_censor_status(http_status, https_status)
+            if classification == "ok":
                 status_str = f"{GREEN}OK{NC}"
-                block_type_str = f"{GREEN}✓TLS{NC}"
+                block_type_str = f"{GREEN}✓{reason}{NC}"
                 ok_count += 1
-            elif https_status == -5:
-                status_str = f"{RED}BLOCKED{NC}"
-                block_type_str = f"{RED}(REGIONAL) ✓TLS{NC}"
-                blocked_count += 1
-            elif https_status == -4:
-                status_str = f"{RED}BLOCKED{NC}"
-                block_type_str = f"{RED}(DNS-SPOOF){NC}"
-                blocked_count += 1
-            elif https_status == -3:
-                status_str = f"{RED}BLOCKED{NC}"
-                block_type_str = f"{RED}(DNS){NC}"
-                blocked_count += 1
-            elif https_status == -2:
-                status_str = f"{RED}BLOCKED{NC}"
-                block_type_str = f"{RED}(DPI/RESET){NC}"
-                blocked_count += 1
-            elif https_status == -1:
-                status_str = f"{RED}BLOCKED{NC}"
-                block_type_str = f"{RED}(TCP/REFUSED){NC}"
-                blocked_count += 1
-            elif https_status == -6:
-                status_str = f"{RED}BLOCKED{NC}"
-                block_type_str = f"{RED}(TLS/SSL){NC}"
-                blocked_count += 1
-            elif https_status == 0:
-                if http_status == 200 or (300 <= http_status < 400):
-                    status_str = f"{YELLOW}PARTIAL{NC}"
-                    block_type_str = f"{YELLOW}(DPI/KEYWORD) ✓HTTP{NC}"
-                    partial_count += 1
-                else:
-                    status_str = f"{RED}BLOCKED{NC}"
-                    block_type_str = f"{RED}(TIMEOUT){NC}"
-                    blocked_count += 1
-            elif https_status == 403:
-                status_str = f"{RED}BLOCKED{NC}"
-                block_type_str = f"{RED}(REGIONAL) ✗TLS{NC}"
-                blocked_count += 1
+            elif classification == "partial":
+                status_str = f"{YELLOW}PARTIAL{NC}"
+                block_type_str = f"{YELLOW}({reason}){NC}"
+                partial_count += 1
             else:
-                if http_status == 200 or (300 <= http_status < 400):
-                    status_str = f"{YELLOW}PARTIAL{NC}"
-                    block_type_str = f"{YELLOW}(HTTP RESPONSE) {https_status}{NC}"
-                    partial_count += 1
-                else:
-                    status_str = f"{RED}BLOCKED{NC}"
-                    block_type_str = f"{RED}(CODE {https_status}){NC}"
-                    blocked_count += 1
+                status_str = f"{RED}BLOCKED{NC}"
+                block_type_str = f"{RED}({reason}){NC}"
+                blocked_count += 1
                     
             print(f"  {domain:<28} │ {pad_ansi(status_str, 14)} │ {block_type_str}")
             
@@ -1233,10 +1217,9 @@ def test_iperf3_ru():
     
     def check_port(host, port):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.4)
-            s.connect((host, port))
-            s.close()
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.4)
+                s.connect((host, port))
             return port
         except Exception:
             return None
@@ -1416,6 +1399,7 @@ def run_http_speed(url):
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3.0) as response:
             bytes_downloaded = 0
+            elapsed = 0.0
             while True:
                 chunk = response.read(65536)
                 if not chunk:
@@ -1424,6 +1408,8 @@ def run_http_speed(url):
                 elapsed = time.time() - start_time
                 if elapsed >= 4.0:
                     break
+            if bytes_downloaded and elapsed == 0.0:
+                elapsed = time.time() - start_time
             if elapsed == 0:
                 return 0.0
             speed_bps = (bytes_downloaded * 8) / elapsed
@@ -1540,11 +1526,11 @@ def test_bench_speedtest():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Генератор полного отчета диагностики
+#  Генератор диагностического отчета
 # ═════════════════════════════════════════════════════════════════════════════
 
 def run_diagnostics_report() -> str:
-    """Фоновый сборщик полного Markdown-отчета."""
+    """Фоновый сборщик Markdown-отчета без длительных нагрузочных тестов."""
     import platform
     
     # 1. Сбор системных данных
@@ -1726,7 +1712,7 @@ def run_diagnostics_report() -> str:
 def test_generate_report():
     """Тест 7. Запуск сборщика отчета в TUI"""
     clear()
-    title("Генерация полного отчета диагностики")
+    title("Генерация диагностического отчета")
     print()
     
     try:
@@ -1773,11 +1759,11 @@ def menu_diagnostics(state: AppState):
         choice = menu([
             ("1", "🌍 Сетевая идентификация (GeoIP)", "Анализ IP-адресов, ASN и геолокации"),
             ("2", "🛡️ Доступ к медиа-сервисам (Geoblocks)", "Тест ограничений OTT и ИИ-платформ"),
-            ("3", "🛡️ Доступность из РФ (DPI)", "Анализ блокировок популярных ресурсов"),
+            ("3", "🛡️ Исходящая доступность с VPS (DPI)", "Проверка DNS, HTTP, TLS и возможных блокировок"),
             ("4", "🌐 Тест пропускной способности (Global)", "Замер скорости до мировых узлов"),
             ("5", "⚡ Тест пропускной способности (iPerf3 RU)", "Замер скорости до серверов в РФ"),
             ("6", "💻 Производительность процессора (Sysbench)", "Бенчмарк вычислительной мощности CPU"),
-            ("7", "📝 Экспорт полного отчета", "Генерация Markdown-сводки"),
+            ("7", "📝 Экспорт диагностического отчета", "GeoIP, доступность сайтов и состояние служб"),
             ("0", "↩ Назад", "Возврат в главное меню")
         ], "ВЫБОР ДИАГНОСТИЧЕСКОГО ТЕСТА")
         

@@ -86,6 +86,75 @@ def test_apply_config_returns_false_on_write_error():
     mock_reload.assert_not_called()
 
 
+def test_active_traffic_daemon_is_not_restarted_when_unit_is_unchanged(tmp_path):
+    from hydra.core import orchestrator
+
+    state = AppState()
+    state.network.clash_api_enabled = True
+    service_file = tmp_path / "hydra-traffic-daemon.service"
+    completed = MagicMock(returncode=0)
+
+    with patch.object(orchestrator, "TRAFFIC_DAEMON_SERVICE", service_file), \
+         patch("hydra.core.orchestrator.subprocess.run", return_value=completed) as run:
+        orchestrator._manage_traffic_daemon(state)
+        run.reset_mock()
+        orchestrator._manage_traffic_daemon(state)
+
+    commands = [call.args[0] for call in run.call_args_list]
+    assert ["systemctl", "restart", "hydra-traffic-daemon"] not in commands
+    assert ["systemctl", "start", "hydra-traffic-daemon"] not in commands
+
+
+def test_inactive_traffic_daemon_is_started_without_forced_restart(tmp_path):
+    from hydra.core import orchestrator
+
+    state = AppState()
+    state.network.clash_api_enabled = True
+    service_file = tmp_path / "hydra-traffic-daemon.service"
+
+    with patch.object(orchestrator, "TRAFFIC_DAEMON_SERVICE", service_file), \
+         patch("hydra.core.orchestrator.subprocess.run", return_value=MagicMock(returncode=0)):
+        orchestrator._manage_traffic_daemon(state)
+
+    def result_for(command, **kwargs):
+        return MagicMock(returncode=1 if "is-active" in command else 0)
+
+    with patch.object(orchestrator, "TRAFFIC_DAEMON_SERVICE", service_file), \
+         patch("hydra.core.orchestrator.subprocess.run", side_effect=result_for) as run:
+        orchestrator._manage_traffic_daemon(state)
+
+    commands = [call.args[0] for call in run.call_args_list]
+    assert ["systemctl", "start", "hydra-traffic-daemon"] in commands
+    assert ["systemctl", "restart", "hydra-traffic-daemon"] not in commands
+
+
+def test_reinstall_plugin_preserves_configuration_and_enabled_state():
+    state, mock = _state_with_mock_transport()
+    state.protocols["mock_transport"].port = 9443
+    state.protocols["mock_transport"].config = {
+        "domain": "vpn.example",
+        "transport": "quic",
+    }
+
+    with (
+        patch("hydra.core.orchestrator.registry.get", return_value=mock),
+        patch("hydra.core.orchestrator.apply_config", return_value=True),
+        patch("hydra.core.orchestrator.save_state"),
+    ):
+        from hydra.core import orchestrator
+        result = orchestrator.reinstall_plugin(state, "mock_transport")
+
+    protocol = state.protocols["mock_transport"]
+    assert result is True
+    assert protocol.installed is True
+    assert protocol.enabled is True
+    assert protocol.port == 9443
+    assert protocol.config == {
+        "domain": "vpn.example",
+        "transport": "quic",
+    }
+
+
 def test_add_user_fanout():
     state, mock = _state_with_mock_transport()
     user = User(email="alice@test", uuid="uuid-1")
@@ -252,3 +321,22 @@ def test_apply_config_returns_false_when_caddy_rebuild_fails():
          patch("hydra.core.sni_router.rebuild", return_value=False), \
          patch("socket.socket", return_value=fake_socket):
         assert orchestrator.apply_config(state) is False
+
+
+def test_install_plugin_rolls_back_state_when_apply_fails():
+    from hydra.core import orchestrator
+
+    state = AppState()
+    state.protocols["mock_transport"] = PluginState(enabled=True, installed=False)
+    plugin = _MockTransport()
+
+    with patch("hydra.core.orchestrator.registry.get", return_value=plugin), \
+         patch("hydra.core.orchestrator.apply_config", side_effect=[False, True]) as apply, \
+         patch("hydra.core.orchestrator.save_state") as save:
+        result = orchestrator.install_plugin(state, "mock_transport")
+
+    assert result is False
+    assert state.protocols["mock_transport"].installed is False
+    assert state.protocols["mock_transport"].enabled is True
+    assert apply.call_count == 2
+    assert save.call_count == 2

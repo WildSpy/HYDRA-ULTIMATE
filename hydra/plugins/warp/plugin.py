@@ -592,11 +592,22 @@ class WarpPlugin(BasePlugin):
                 existing[key] = downloaded_lists[key]
 
             # Удаляем из кэша списки, которые больше не активны
-            keys_to_delete = [k for k in existing if k != "updated_at" and k not in enabled_keys]
+            metadata_keys = {"updated_at", "last_attempt_at"}
+            keys_to_delete = [
+                k for k in existing if k not in metadata_keys and k not in enabled_keys
+            ]
             for k in keys_to_delete:
                 existing.pop(k, None)
 
-            existing["updated_at"] = __import__("datetime").datetime.now().isoformat()
+            attempted_at = __import__("datetime").datetime.now().isoformat()
+            existing["last_attempt_at"] = attempted_at
+            if errors:
+                # A partial refresh is usable, but not fully fresh. The sync
+                # agent will retry it after a short backoff instead of waiting
+                # another 24 hours.
+                existing.pop("updated_at", None)
+            else:
+                existing["updated_at"] = attempted_at
 
             WARP_EXTERNAL_CACHE.parent.mkdir(parents=True, exist_ok=True)
             WARP_EXTERNAL_CACHE.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")

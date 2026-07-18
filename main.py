@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HYDRA v2.3.5 — Multi-Protocol Proxy Manager
+HYDRA v2.4.0 — Multi-Protocol Proxy Manager
 ====================================================
 
 Точка входа. Запуск: sudo python3 main.py
@@ -49,6 +49,16 @@ def main() -> None:
     except Exception as e:
         print(f"ERROR: Не удалось загрузить состояние: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # A git/bootstrap update may replace daemon code without changing user
+    # settings. Reconcile its revision-tagged unit once on TUI startup so the
+    # new process is picked up without forcing restarts on every apply_config.
+    if os.name != "nt":
+        try:
+            from hydra.core.orchestrator import reconcile_traffic_daemon
+            reconcile_traffic_daemon(state)
+        except Exception:
+            pass
 
     try:
         main_menu(state)

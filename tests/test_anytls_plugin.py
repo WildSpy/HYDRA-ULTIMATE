@@ -70,7 +70,33 @@ def test_configure_has_padding_scheme():
     with patch("pathlib.Path.exists", return_value=True):
         frag = p.configure(state)
 
-    assert frag.inbounds[0]["padding_scheme"] == DEFAULT_PADDING_SCHEME
+    from hydra.plugins.anytls.presets import get_preset
+    assert frag.inbounds[0]["padding_scheme"] == get_preset("web_browsing")["padding_scheme"]
+
+
+def test_preset_management():
+    """Тест переключения пресетов AnyTLS."""
+    p = AnyTLSPlugin()
+    state = _state([_user("a@x.com")])
+    
+    # По умолчанию web_browsing
+    assert p.get_current_preset(state) == "web_browsing"
+    
+    # Меняем пресет
+    with patch("hydra.core.orchestrator.apply_config", return_value=True), \
+         patch("hydra.core.state.save_state") as mock_save:
+        assert p.set_preset(state, "streaming") is True
+        assert p.get_current_preset(state) == "streaming"
+        
+        # Проверяем, что в configure() используется новый пресет
+        with patch("pathlib.Path.exists", return_value=True):
+            frag = p.configure(state)
+        from hydra.plugins.anytls.presets import get_preset
+        assert frag.inbounds[0]["padding_scheme"] == get_preset("streaming")["padding_scheme"]
+        
+        # Невалидный пресет
+        assert p.set_preset(state, "invalid_preset") is False
+
 
 
 def test_configure_users_in_inbound():
