@@ -13,6 +13,7 @@ from hydra.services.subscriptions.generator import (
     generate_singbox_config,
     generate_nekobox_sub,
     generate_throne_sub,
+    clean_link_to_sn,
     resolve_subscription_format,
     serialize_nekobox_config,
     generate_client_config,
@@ -290,6 +291,106 @@ def test_generate_nekobox_sub_wraps_shadowtls_chain_as_native_config():
     assert b'fdfe:dcba:9876' not in data
     assert b'inet4_address' not in data
     assert b'inet6_address' not in data
+
+
+def _trusttunnel_plugin_with_tcp_and_quic() -> MockTransport:
+    plugin = MockTransport()
+    plugin.meta = PluginMeta(
+        name="trusttunnel",
+        description="TrustTunnel",
+        category=PluginCategory.TRANSPORT,
+        version="1.0.0",
+    )
+    plugin.generate_client_config = MagicMock(return_value=json.dumps({
+        "log": {"level": "info"},
+        "dns": {"servers": [
+            {"tag": "local", "address": "1.1.1.1", "detour": "direct"},
+        ]},
+        "outbounds": [
+            {"type": "trusttunnel", "tag": "tt-tcp"},
+            {
+                "type": "trusttunnel",
+                "tag": "tt-quic",
+                "server": "tt.example.com",
+                "quic": True,
+                "tls": {"enabled": True, "alpn": ["h3"]},
+            },
+            {"type": "direct", "tag": "direct"},
+        ],
+        "route": {"final": "tt-tcp"},
+    }))
+    return plugin
+
+
+def test_trusttunnel_quic_link_is_not_lossily_serialized_for_nekobox():
+    user = _make_user("a@x.com")
+    tcp = "tt://u:p@tt.example.com:443?sni=tt.example.com&alpn=h2#tcp"
+    quic = "tt://u:p@tt.example.com:443?sni=tt.example.com&alpn=h3#quic"
+
+    assert clean_link_to_sn(tcp, user).startswith("sn://trusttunnel?")
+    assert clean_link_to_sn(quic, user) is None
+
+
+def test_generate_throne_sub_wraps_only_trusttunnel_quic_as_custom_config():
+    user = _make_user("a@x.com")
+    state = _make_state([user])
+    plugin = _trusttunnel_plugin_with_tcp_and_quic()
+    raw_links = "\n".join([
+        "tt://u:p@tt.example.com:443?sni=tt.example.com&alpn=h2#tcp",
+        "tt://u:p@tt.example.com:443?sni=tt.example.com&alpn=h3#quic",
+        "",
+    ])
+
+    with patch(
+        "hydra.services.subscriptions.generator.generate_base64_sub",
+        return_value=base64.b64encode(raw_links.encode()).decode(),
+    ), patch("hydra.services.subscriptions.generator.enabled", return_value=[plugin]):
+        subscription = generate_throne_sub(user, state)
+
+    links = base64.b64decode(subscription).decode().splitlines()
+    assert any("alpn=h2" in link for link in links)
+    assert not any("alpn=h3" in link for link in links if link.startswith("tt://"))
+    custom = next(link for link in links if link.startswith("json://trusttunnel-quic#"))
+    encoded = custom.split("#", 1)[1] + "=" * (-len(custom.split("#", 1)[1]) % 4)
+    wrapper = json.loads(base64.urlsafe_b64decode(encoded))
+    config = json.loads(wrapper["config"])
+
+    assert [outbound["tag"] for outbound in config["outbounds"]] == ["tt-quic", "direct"]
+    assert config["outbounds"][0]["quic"] is True
+    assert config["outbounds"][0]["tls"]["alpn"] == ["h3"]
+    assert config["route"]["final"] == "tt-quic"
+    assert config["route"]["default_domain_resolver"] == "local"
+    assert config["inbounds"][0]["type"] == "mixed"
+
+
+def test_generate_nekobox_sub_wraps_trusttunnel_quic_as_native_config():
+    user = _make_user("a@x.com")
+    state = _make_state([user])
+    plugin = _trusttunnel_plugin_with_tcp_and_quic()
+    raw_links = "\n".join([
+        "sn://trusttunnel?tcp-profile",
+        "tt://u:p@tt.example.com:443?sni=tt.example.com&alpn=h3#quic",
+        "",
+    ])
+
+    with patch(
+        "hydra.services.subscriptions.generator.generate_base64_sub",
+        return_value=base64.b64encode(raw_links.encode()).decode(),
+    ), patch("hydra.services.subscriptions.generator.enabled", return_value=[plugin]):
+        subscription = generate_nekobox_sub(user, state)
+
+    links = base64.b64decode(subscription).decode().splitlines()
+    assert links[0] == "sn://trusttunnel?tcp-profile"
+    assert not any("alpn=h3" in link for link in links)
+    custom = next(link for link in links if link.startswith("sn://config?"))
+    encoded = custom.split("?", 1)[1] + "=" * (-len(custom.split("?", 1)[1]) % 4)
+    data = zlib.decompress(base64.urlsafe_b64decode(encoded))
+
+    assert b'"tag":"tt-quic"' in data
+    assert b'"quic":true' in data
+    assert b'"alpn":["h3"]' in data
+    assert b'"default_domain_resolver":"local"' in data
+    assert b'"address":["172.19.0.1/30"]' in data
 
 
 def test_resolve_subscription_format_uses_explicit_override_then_user_agent():

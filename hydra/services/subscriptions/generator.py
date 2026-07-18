@@ -5,7 +5,7 @@ hydra/services/subscriptions/generator.py — Генератор подписо�
   • Base64 (для v2rayNG, Shadowrocket, Hiddify)
   • Sing-Box JSON (для совместимых клиентов)
   • NekoBox sn:// ссылки, включая атомарный Trojan-over-ShadowTLS config
-  • Throne custom config для атомарной ShadowTLS-цепочки
+  • Throne custom config для ShadowTLS и TrustTunnel QUIC
 
 Динамически собирает ссылки/конфиги со всех включённых TRANSPORT-плагинов
 через их v2-методы client_link() и generate_client_config().
@@ -291,6 +291,9 @@ def clean_link_to_sn(link: str, user: User) -> Optional[str]:
             
             query = urllib.parse.parse_qs(parsed.query)
             sni = query.get("sni", [host])[0]
+            if query.get("alpn", ["h2"])[0] == "h3":
+                # QUIC is not represented by NekoBox's TrustTunnelBean link.
+                return None
             
             return serialize_trusttunnel(host, port, username, password, sni, fragment)
             
@@ -418,7 +421,7 @@ def generate_base64_sub(user: User, state: AppState) -> str:
     return base64.b64encode(payload.encode("utf-8")).decode("utf-8")
 
 
-def _links_without_shadowtls_plugin(user: User, state: AppState) -> list[str]:
+def _links_without_custom_configs(user: User, state: AppState) -> list[str]:
     payload = base64.b64decode(generate_base64_sub(user, state)).decode("utf-8")
     links = []
     for link in payload.splitlines():
@@ -428,7 +431,11 @@ def _links_without_shadowtls_plugin(user: User, state: AppState) -> list[str]:
             parsed.scheme == "trojan"
             and "shadow-tls" in query.get("plugin", [])
         )
-        if link and not is_shadowtls_trojan:
+        is_trusttunnel_quic = (
+            parsed.scheme in ("tt", "trusttunnel")
+            and query.get("alpn", ["h2"])[0] == "h3"
+        )
+        if link and not is_shadowtls_trojan and not is_trusttunnel_quic:
             links.append(link)
     return links
 
@@ -444,29 +451,102 @@ def _shadowtls_client_config(user: User, state: AppState) -> Optional[dict]:
     return json.loads(shadowtls.generate_client_config(user, state))
 
 
+def _trusttunnel_quic_client_config(user: User, state: AppState) -> Optional[dict]:
+    """Return a standalone TrustTunnel QUIC config, including in `both` mode."""
+    plugin = next(
+        (p for p in enabled(state, PluginCategory.TRANSPORT) if p.meta.name == "trusttunnel"),
+        None,
+    )
+    if not plugin:
+        return None
+
+    source = json.loads(plugin.generate_client_config(user, state))
+    quic_outbound = next(
+        (
+            outbound for outbound in source.get("outbounds", [])
+            if outbound.get("type") == "trusttunnel" and outbound.get("quic") is True
+        ),
+        None,
+    )
+    if not quic_outbound:
+        return None
+
+    direct = next(
+        (outbound for outbound in source.get("outbounds", []) if outbound.get("tag") == "direct"),
+        {"type": "direct", "tag": "direct"},
+    )
+    source["outbounds"] = [quic_outbound, direct]
+    source["route"] = {
+        "final": quic_outbound["tag"],
+        "auto_detect_interface": True,
+        "default_domain_resolver": "local",
+    }
+    return source
+
+
+def _add_mixed_inbound(config: dict) -> None:
+    config["inbounds"] = [{
+        "type": "mixed",
+        "tag": "mixed-in",
+        "listen": "127.0.0.1",
+        "listen_port": 2080,
+    }]
+
+
+def _add_nekobox_inbounds(config: dict) -> None:
+    config.setdefault("route", {})["auto_detect_interface"] = True
+    config["inbounds"] = [
+        {
+            "type": "tun",
+            "tag": "tun-in",
+            "stack": "mixed",
+            "mtu": 9000,
+            "address": ["172.19.0.1/30"],
+            "endpoint_independent_nat": True,
+        },
+        {
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "127.0.0.1",
+            "listen_port": 2080,
+        },
+    ]
+
+
+def _throne_custom_link(config: dict, name: str, link_type: str) -> str:
+    wrapper = {
+        "type": "custom",
+        "name": name,
+        "subtype": "fullconfig",
+        "config": json.dumps(config, ensure_ascii=False, separators=(",", ":")),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return f"json://{link_type}#{encoded}"
+
+
 def generate_throne_sub(user: User, state: AppState) -> str:
-    """Build a Throne subscription without flattening ShadowTLS detours."""
-    links = _links_without_shadowtls_plugin(user, state)
+    """Build a Throne subscription with complex transports kept atomic."""
+    links = _links_without_custom_configs(user, state)
 
     try:
         config = _shadowtls_client_config(user, state)
         if config:
-            config["inbounds"] = [{
-                "type": "mixed",
-                "tag": "mixed-in",
-                "listen": "127.0.0.1",
-                "listen_port": 2080,
-            }]
-            wrapper = {
-                "type": "custom",
-                "name": f"{user.email} ShadowTLS",
-                "subtype": "fullconfig",
-                "config": json.dumps(config, ensure_ascii=False, separators=(",", ":")),
-            }
-            encoded = base64.urlsafe_b64encode(
-                json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            ).decode("ascii").rstrip("=")
-            links.append(f"json://shadowtls#{encoded}")
+            _add_mixed_inbound(config)
+            links.append(_throne_custom_link(
+                config, f"{user.email} ShadowTLS", "shadowtls",
+            ))
+    except Exception:
+        pass
+
+    try:
+        config = _trusttunnel_quic_client_config(user, state)
+        if config:
+            _add_mixed_inbound(config)
+            links.append(_throne_custom_link(
+                config, f"{user.email} TrustTunnel QUIC", "trusttunnel-quic",
+            ))
     except Exception:
         pass
 
@@ -475,31 +555,26 @@ def generate_throne_sub(user: User, state: AppState) -> str:
 
 
 def generate_nekobox_sub(user: User, state: AppState) -> str:
-    """Build a NekoBox subscription with ShadowTLS kept as one full config."""
-    links = _links_without_shadowtls_plugin(user, state)
+    """Build a NekoBox subscription with complex transports kept atomic."""
+    links = _links_without_custom_configs(user, state)
 
     try:
         config = _shadowtls_client_config(user, state)
         if config:
-            config.setdefault("route", {})["auto_detect_interface"] = True
-            config["inbounds"] = [
-                {
-                    "type": "tun",
-                    "tag": "tun-in",
-                    "stack": "mixed",
-                    "mtu": 9000,
-                    "address": ["172.19.0.1/30"],
-                    "endpoint_independent_nat": True,
-                },
-                {
-                    "type": "mixed",
-                    "tag": "mixed-in",
-                    "listen": "127.0.0.1",
-                    "listen_port": 2080,
-                },
-            ]
+            _add_nekobox_inbounds(config)
             compact = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
             links.append(serialize_nekobox_config(compact, f"{user.email} ShadowTLS"))
+    except Exception:
+        pass
+
+    try:
+        config = _trusttunnel_quic_client_config(user, state)
+        if config:
+            _add_nekobox_inbounds(config)
+            compact = json.dumps(config, ensure_ascii=False, separators=(",", ":"))
+            links.append(serialize_nekobox_config(
+                compact, f"{user.email} TrustTunnel QUIC",
+            ))
     except Exception:
         pass
 
