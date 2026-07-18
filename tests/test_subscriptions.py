@@ -313,7 +313,11 @@ def _trusttunnel_plugin_with_tcp_and_quic() -> MockTransport:
                 "tag": "tt-quic",
                 "server": "tt.example.com",
                 "quic": True,
-                "tls": {"enabled": True, "alpn": ["h3"]},
+                "tls": {
+                    "enabled": True,
+                    "server_name": "tt.example.com",
+                    "alpn": ["h3"],
+                },
             },
             {"type": "direct", "tag": "direct"},
         ],
@@ -334,6 +338,7 @@ def test_trusttunnel_quic_link_is_not_lossily_serialized_for_nekobox():
 def test_generate_throne_sub_wraps_only_trusttunnel_quic_as_custom_config():
     user = _make_user("a@x.com")
     state = _make_state([user])
+    state.network.server_ip = "203.0.113.10"
     plugin = _trusttunnel_plugin_with_tcp_and_quic()
     raw_links = "\n".join([
         "tt://u:p@tt.example.com:443?sni=tt.example.com&alpn=h2#tcp",
@@ -357,6 +362,8 @@ def test_generate_throne_sub_wraps_only_trusttunnel_quic_as_custom_config():
 
     assert [outbound["tag"] for outbound in config["outbounds"]] == ["tt-quic", "direct"]
     assert config["outbounds"][0]["quic"] is True
+    assert config["outbounds"][0]["server"] == "203.0.113.10"
+    assert config["outbounds"][0]["tls"]["server_name"] == "tt.example.com"
     assert config["outbounds"][0]["tls"]["alpn"] == ["h3"]
     assert config["route"]["final"] == "tt-quic"
     assert config["route"]["default_domain_resolver"] == "local"
@@ -387,6 +394,7 @@ def test_generate_nekobox_sub_wraps_trusttunnel_quic_as_native_config():
     data = zlib.decompress(base64.urlsafe_b64decode(encoded))
 
     assert b'"tag":"tt-quic"' in data
+    assert b'"server":"tt.example.com"' in data
     assert b'"quic":true' in data
     assert b'"alpn":["h3"]' in data
     assert b'"default_domain_resolver":"local"' in data

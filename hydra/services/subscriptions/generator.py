@@ -493,6 +493,27 @@ def _add_mixed_inbound(config: dict) -> None:
     }]
 
 
+def _pin_trusttunnel_quic_endpoint(config: dict, state: AppState) -> None:
+    """Use an IP endpoint for Throne's Windows QUIC dialer; keep TLS SNI intact."""
+    outbound = next(
+        (
+            item for item in config.get("outbounds", [])
+            if item.get("type") == "trusttunnel" and item.get("quic") is True
+        ),
+        None,
+    )
+    if not outbound:
+        return
+
+    endpoint = (state.network.server_ip or "").strip().strip("[]")
+    if not endpoint:
+        try:
+            endpoint = socket.gethostbyname(outbound.get("server", ""))
+        except (OSError, TypeError):
+            return
+    outbound["server"] = endpoint
+
+
 def _add_nekobox_inbounds(config: dict) -> None:
     config.setdefault("route", {})["auto_detect_interface"] = True
     config["inbounds"] = [
@@ -543,6 +564,7 @@ def generate_throne_sub(user: User, state: AppState) -> str:
     try:
         config = _trusttunnel_quic_client_config(user, state)
         if config:
+            _pin_trusttunnel_quic_endpoint(config, state)
             _add_mixed_inbound(config)
             links.append(_throne_custom_link(
                 config, f"{user.email} TrustTunnel QUIC", "trusttunnel-quic",
