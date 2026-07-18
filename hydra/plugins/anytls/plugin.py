@@ -14,6 +14,8 @@ from hydra.plugins.base import (
 from hydra.core.state import AppState, User
 from hydra.utils.crypto import derive_key, derive_hex_key
 from hydra.utils.net import public_ip
+from hydra.plugins.anytls.presets import get_preset
+
 
 DEFAULT_PADDING_SCHEME = [
     "stop=8",
@@ -90,7 +92,7 @@ class AnyTLSPlugin(BasePlugin):
             "listen": "127.0.0.1" if behind_mux else "::",
             "listen_port": listen_port,
             "users": users,
-            "padding_scheme": DEFAULT_PADDING_SCHEME,
+            "padding_scheme": self._get_padding_scheme(state),
         }
         if not behind_mux:
             inbound["tls"] = {
@@ -103,6 +105,36 @@ class AnyTLSPlugin(BasePlugin):
 
     def apply(self, state: AppState) -> bool:
         return True
+
+    def _get_padding_scheme(self, state: AppState) -> list[str]:
+        ps = state.protocols.get("anytls")
+        preset_name = "web_browsing"
+        if ps and ps.config and "padding_preset" in ps.config:
+            preset_name = ps.config["padding_preset"]
+        preset = get_preset(preset_name)
+        return preset["padding_scheme"]
+
+    def get_current_preset(self, state: AppState) -> str:
+        """Возвращает имя текущего пресета обфускации."""
+        ps = state.protocols.get("anytls")
+        if ps and ps.config and "padding_preset" in ps.config:
+            return ps.config["padding_preset"]
+        return "web_browsing"
+
+    def set_preset(self, state: AppState, preset_name: str) -> bool:
+        """Устанавливает пресет обфускации и применяет конфиг."""
+        from hydra.plugins.anytls.presets import PRESETS
+        if preset_name not in PRESETS:
+            return False
+        
+        from hydra.core.state import get_protocol, save_state
+        ps = get_protocol(state, "anytls")
+        ps.config["padding_preset"] = preset_name
+        save_state(state)
+        
+        from hydra.core import orchestrator
+        return orchestrator.apply_config(state)
+
 
     # ═════════════════════════════════════════════════════════════════════
     #  Per-user TRANSPORT-методы

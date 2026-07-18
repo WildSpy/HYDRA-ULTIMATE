@@ -632,6 +632,9 @@ def menu_plugin(state: AppState, p):
     if p.meta.name == "amneziawg":
         _menu_amneziawg(state, p)
         return
+    if p.meta.name == "anytls":
+        _menu_anytls(state, p)
+        return
     if p.meta.name == "mieru":
         _menu_mieru(state, p)
         return
@@ -2859,6 +2862,158 @@ def _menu_mieru_obfuscation(state: AppState, p):
         options.append(("0", "↩ Назад", ""))
         
         choice = menu(options, "ОБФУСКАЦИЯ MIERU")
+        if choice == "0":
+            break
+            
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(presets):
+                preset_name = presets[idx]["name"]
+                info(f"Применяю пресет обфускации {preset_name}...")
+                if p.set_preset(state, preset_name):
+                    success(f"Пресет {preset_name} успешно применён!")
+                else:
+                    error("Не удалось применить пресет")
+                prompt("Нажмите Enter")
+
+
+def _menu_anytls(state: AppState, p):
+    from hydra.core.state import get_protocol
+    
+    while True:
+        clear()
+        ps = get_protocol(state, p.meta.name)
+        
+        # Статус
+        try:
+            st = p.status()
+            current_preset = p.get_current_preset(state)
+            from hydra.plugins.anytls.presets import get_preset
+            preset_label = get_preset(current_preset)["label"]
+            
+            lines = [
+                f"  Статус:      {'🟢 Работает' if st.running else '🔴 Остановлен'}",
+                f"  Установлен:  {_ok(st.installed)}",
+                f"  Включён:     {_ok(st.enabled)}",
+            ]
+            if st.port:
+                lines.append(f"  Порт:        {st.port}")
+            lines.append(f"  Обфускация:  {BOLD}{CYAN}{preset_label}{NC}")
+            if st.info:
+                for k, v in st.info.items():
+                    lines.append(f"  {k}: {v}")
+            panel("🛡️ ANYTLS CONTROL", lines)
+        except Exception:
+            panel("ANYTLS CONTROL", ["  Статус недоступен"])
+        print()
+        
+        options = []
+        if not ps.installed:
+            options.append(("1", "🔧 Установить", p.meta.description))
+        else:
+            if ps.enabled:
+                options.append(("1", "⏸️  Выключить", "Отключить протокол"))
+                options.append(("2", "👥 Клиенты", "Подключённые клиенты и трафик"))
+                options.append(("3", "🔒 Обфускация трафика", f"Текущий режим: {preset_label}"))
+            else:
+                options.append(("1", "▶️  Включить", "Активировать протокол"))
+            
+            options.append(("8", "🔄 Переустановить", "Переустановка протокола"))
+            options.append(("9", "❌ Удалить", "Полное удаление"))
+        
+        options.append(("0", "↩ Назад", ""))
+        
+        choice = menu(options, "ANYTLS")
+        
+        if choice == "0":
+            break
+            
+        elif choice == "1":
+            if not ps.installed:
+                info("Установка...")
+                ok = orchestrator.install_plugin(state, p.meta.name)
+                if ok:
+                    success("Установлено!")
+                    try:
+                        if orchestrator.enable(state, p.meta.name):
+                            success("Протокол включён и применён")
+                        else:
+                            error("Ошибка применения конфигурации")
+                    except Exception as e:
+                        error(f"Ошибка активации протокола: {e}")
+                else:
+                    error("Ошибка установки")
+            elif ps.enabled:
+                if orchestrator.disable(state, p.meta.name):
+                    success("Протокол выключен")
+                else:
+                    error("Ошибка применения конфигурации")
+            else:
+                try:
+                    if orchestrator.enable(state, p.meta.name):
+                        success("Протокол включён")
+                    else:
+                        error("Ошибка применения конфигурации")
+                except Exception as e:
+                    error(f"Ошибка активации протокола: {e}")
+            prompt("Нажмите Enter")
+            
+        elif choice == "2" and ps.installed and ps.enabled:
+            _show_plugin_clients(state, p)
+            
+        elif choice == "3" and ps.installed and ps.enabled:
+            _menu_anytls_obfuscation(state, p)
+            
+        elif choice == "8" and ps.installed:
+            if confirm("Переустановить?", default=False):
+                orchestrator.uninstall_plugin(state, p.meta.name)
+                ok = orchestrator.install_plugin(state, p.meta.name)
+                if ok:
+                    try:
+                        orchestrator.enable(state, p.meta.name)
+                        success("Переустановлено!")
+                    except Exception as e:
+                        error(f"Ошибка активации: {e}")
+                else:
+                    error("Ошибка установки")
+                prompt("Нажмите Enter")
+                
+        elif choice == "9" and ps.installed:
+            if confirm("Вы уверены, что хотите полностью удалить AnyTLS?", default=False):
+                orchestrator.uninstall_plugin(state, p.meta.name)
+                success("Удалено")
+                prompt("Нажмите Enter")
+                return
+
+
+def _menu_anytls_obfuscation(state: AppState, p):
+    from hydra.plugins.anytls.presets import list_presets, get_preset
+    
+    while True:
+        clear()
+        current_preset = p.get_current_preset(state)
+        presets = list_presets()
+        preset_label = get_preset(current_preset)["label"]
+        
+        lines = [
+            f"Текущий режим обфускации: {BOLD}{CYAN}{preset_label}{NC}",
+            "",
+            "Смена режима перегенерирует конфигурацию sing-box.",
+            "Клиенты получат новые настройки при подключении/обновлении.",
+        ]
+        panel("🔒 ОБФУСКАЦИЯ ТРАФИКА ANYTLS", lines)
+        print()
+        
+        options = []
+        for idx, pr in enumerate(presets, 1):
+            marker = "  "
+            if pr["name"] == current_preset:
+                marker = "• "
+            options.append((str(idx), f"{marker}{pr['label']}", pr["description"]))
+            
+        options.append(("0", "↩ Назад", ""))
+        
+        choice = menu(options, "ОБФУСКАЦИЯ ANYTLS")
         if choice == "0":
             break
             
