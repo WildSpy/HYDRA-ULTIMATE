@@ -1,6 +1,6 @@
-# 🐙 HYDRA v2.3.5 — Multi-Protocol Proxy & Routing Orchestrator
+# 🐙 HYDRA v2.4.0 — Multi-Protocol Proxy & Routing Orchestrator
 
-[![Version](https://img.shields.io/badge/version-2.3.5-blue.svg?style=flat-square)](https://github.com/gr33nimax/HYDRA-ULTIMATE)
+[![Version](https://img.shields.io/badge/version-2.4.0-blue.svg?style=flat-square)](https://github.com/gr33nimax/HYDRA-ULTIMATE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg?style=flat-square)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-lightgrey.svg?style=flat-square)](https://ubuntu.com/)
@@ -275,6 +275,16 @@ journalctl -u sing-box -n 20 --no-pager
 ---
 
 ## 📜 История изменений (Changelog)
+
+### [2.4.0] — 18.07.2026
+
+| Компонент | Описание изменений |
+| :--- | :--- |
+| **Новые транспорты** | Добавлены ShadowTLS v3 + Trojan, Hysteria2 с Salamander obfuscation и Snell v4; реализованы установка, настройка из TUI, управление пользователями и выдача клиентских конфигураций. |
+| **Подписки и доступ** | Расширена генерация конфигураций для NekoBox и Throne, сохранены цепочки ShadowTLS и режим TrustTunnel QUIC; блокировка и удаление пользователя теперь немедленно отзывают доступ. |
+| **Мониторинг и трафик** | Переработаны экран трафика и просмотр сервисных логов, стабилизирован `traffic_daemon`, добавлен детальный мониторинг пользователей и повтор применения конфигурации после сбоя синхронизации. |
+| **Маршрутизация** | qWDTT интегрирован в общий контур маршрутизации; исправлены зависание просмотра логов, совместимость ShadowTLS и конфликты клиентских TUN/QUIC-конфигураций. |
+| **TUI и диагностика** | Унифицированы экраны управления протоколами и статусы, добавлены пресеты SNI/обфускации, повышена точность VPS-диагностики и расширено тестовое покрытие. |
 
 ### [2.3.5] — 17.07.2026
 
