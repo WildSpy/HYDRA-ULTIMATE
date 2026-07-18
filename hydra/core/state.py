@@ -258,6 +258,10 @@ def save_state(state: AppState) -> None:
             ):
                 if key in latest.install:
                     state.install[key] = copy.deepcopy(latest.install[key])
+            if latest.install.get("sync_config_pending"):
+                state.install["sync_config_pending"] = True
+            else:
+                state.install.pop("sync_config_pending", None)
         _save_state_unlocked(state)
 
 

@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hydra.core.state import load_state, update_state
+from hydra.core.state import update_state
 from hydra.plugins.registry import get_enabled
 from hydra.services.traffic import check_traffic_limits
 
@@ -24,72 +24,66 @@ def run_sync() -> None:
       3. Уведомить плагины о блокировке
       4. Применить измененный конфиг к службам
     """
-    state = load_state()
-    any_blocked = False
-    newly_blocked = 0
-
-    # 1. Проверка лимитов трафика
-    # Refresh counters and persist them under the same cross-process lock used
-    # by the traffic daemon.
-    def refresh_and_check(latest):
-        return check_traffic_limits(latest)
-
-    state, exceeded = update_state(refresh_and_check)
-    for email in exceeded:
-        for user in state.users:
-            if user.email == email and not user.blocked:
-                user.blocked = True
-                any_blocked = True
-                newly_blocked += 1
-                _log(f"User {email} blocked: traffic limit exceeded")
-                for p in get_enabled(state):
-                    try:
-                        p.on_user_block(user, state)
-                    except Exception:
-                        pass
-
-    # 2. Проверка TTL
     now = datetime.now(timezone.utc)
-    for user in state.users:
-        if user.blocked:
-            continue
-        if not user.expiry_date:
-            continue
-        try:
-            dt_str = user.expiry_date
-            if dt_str.endswith("Z"):
-                dt_str = dt_str[:-1] + "+00:00"
-            expiry = datetime.fromisoformat(dt_str)
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-            if expiry < now:
+
+    # Refresh counters, evaluate all restrictions and persist the block in one
+    # lock transaction. The pending marker survives a crash or failed apply.
+    def refresh_and_block(latest):
+        exceeded = set(check_traffic_limits(latest))
+        blocked: dict[str, str] = {}
+        for user in latest.users:
+            if user.blocked:
+                continue
+            reason = ""
+            if user.email in exceeded:
+                reason = "traffic limit exceeded"
+            elif user.expiry_date:
+                try:
+                    dt_str = user.expiry_date
+                    if dt_str.endswith("Z"):
+                        dt_str = dt_str[:-1] + "+00:00"
+                    expiry = datetime.fromisoformat(dt_str)
+                    if expiry.tzinfo is None:
+                        expiry = expiry.replace(tzinfo=timezone.utc)
+                    if expiry <= now:
+                        reason = "subscription expired"
+                except (ValueError, TypeError):
+                    _log(f"User {user.email} has an invalid expiry date")
+            if reason:
                 user.blocked = True
-                any_blocked = True
-                newly_blocked += 1
-                _log(f"User {user.email} blocked: subscription expired")
-                for p in get_enabled(state):
-                    try:
-                        p.on_user_block(user, state)
-                    except Exception:
-                        pass
-        except (ValueError, TypeError):
-            pass
+                blocked[user.email] = reason
+        if blocked:
+            latest.install["sync_config_pending"] = True
+        return blocked
 
-    if any_blocked:
+    state, blocked = update_state(refresh_and_block)
+    for email, reason in blocked.items():
+        _log(f"User {email} blocked: {reason}")
+        user = next((item for item in state.users if item.email == email), None)
+        if user is None:
+            continue
+        for plugin in get_enabled(state):
+            try:
+                plugin.on_user_block(user, state)
+            except Exception as exc:
+                _log(f"Plugin {plugin.meta.name} block hook failed for {email}: {exc}")
+
+    # A failed or interrupted apply must be retried on the next timer tick.
+    if state.install.get("sync_config_pending"):
         from hydra.core.orchestrator import apply_config
-        blocked_emails = {user.email for user in state.users if user.blocked}
+        try:
+            applied = apply_config(state)
+        except Exception as exc:
+            applied = False
+            _log(f"Server config apply failed: {exc}")
+        if applied:
+            def clear_pending(latest):
+                return latest.install.pop("sync_config_pending", None) is not None
 
-        def merge_blocks(latest):
-            changed = False
-            for user in latest.users:
-                if user.email in blocked_emails and not user.blocked:
-                    user.blocked = True
-                    changed = True
-            return changed
-
-        state, _ = update_state(merge_blocks)
-        apply_config(state)
-        _log("Applied server config due to new user block(s)")
+            state, _ = update_state(clear_pending)
+            _log("Applied server config due to user access changes")
+        else:
+            _log("Server config apply failed; will retry on the next run")
 
     # 3. WARP: автообновление внешних списков (раз в 24 часа)
     try:
@@ -111,6 +105,10 @@ def run_sync() -> None:
                         diff = datetime.now() - updated_at
                         if diff.total_seconds() < 86400:
                             need_update = False
+                    elif data.get("last_attempt_at"):
+                        attempted_at = datetime.fromisoformat(data["last_attempt_at"])
+                        if (datetime.now() - attempted_at).total_seconds() < 3600:
+                            need_update = False
                 except Exception:
                     pass
             
@@ -119,11 +117,19 @@ def run_sync() -> None:
                 ok, msg = p.update_external_rules()
                 _log(f"WARP: Update result: {msg}")
                 if ok:
-                    apply_config(state)
+                    if apply_config(state):
+                        _log("WARP: Updated rules applied")
+                    else:
+                        def mark_pending(latest):
+                            latest.install["sync_config_pending"] = True
+
+                        state, _ = update_state(mark_pending)
+                        _log("WARP: Config apply failed; will retry on the next run")
     except Exception as e:
         _log(f"WARP auto-update check failed: {e}")
 
-    _log(f"Sync completed: newly blocked users={newly_blocked}")
+    pending = bool(state.install.get("sync_config_pending"))
+    _log(f"Sync completed: newly blocked users={len(blocked)}, config pending={pending}")
 
 def _log(msg: str) -> None:
     try:
