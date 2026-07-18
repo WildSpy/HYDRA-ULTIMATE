@@ -39,11 +39,13 @@ def test_meta():
 def test_sni_presets_are_unique_hostnames():
     domains = [domain for domain, _label in SHADOWTLS_SNI_PRESETS]
     labels = [label for _domain, label in SHADOWTLS_SNI_PRESETS]
-    assert len(domains) >= 10
     assert len(domains) == len(set(domains))
     assert all("." in domain and "://" not in domain for domain in domains)
-    assert labels[0].startswith("Международный")
+    assert domains[0] == "www.google.com"
+    assert labels[0].startswith("Проверенный")
     assert any(label.startswith("Россия") for label in labels)
+    assert "vk.ru" in domains
+    assert {"www.apple.com", "www.cloudflare.com", "www.amazon.com", "vk.com"}.isdisjoint(domains)
 
 
 def test_choose_handshake_sni_supports_preset_and_custom_domain():

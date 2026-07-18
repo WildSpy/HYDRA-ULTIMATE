@@ -21,13 +21,11 @@ from hydra.utils.net import public_ip
 
 
 SHADOWTLS_SNI_PRESETS = (
+    ("www.google.com", "Проверенный · Google"),
     ("www.microsoft.com", "Международный · Microsoft"),
-    ("www.apple.com", "Международный · Apple"),
-    ("www.cloudflare.com", "Международный · Cloudflare"),
-    ("www.amazon.com", "Международный · Amazon"),
     ("www.adobe.com", "Международный · Adobe"),
     ("ya.ru", "Россия · Яндекс"),
-    ("vk.com", "Россия · ВКонтакте"),
+    ("vk.ru", "Россия · ВКонтакте"),
     ("max.ru", "Россия · MAX"),
     ("dzen.ru", "Россия · Дзен"),
     ("rutube.ru", "Россия · Rutube"),
