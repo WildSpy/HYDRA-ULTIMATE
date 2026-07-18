@@ -1617,7 +1617,17 @@ WantedBy=multi-user.target
 #  5. Мониторинг
 # ═════════════════════════════════════════════════════════════════════════════
 
-_MONITORING_EXCLUDED_PROTOCOLS = frozenset({"wdtt"})
+def _unit_active(unit: str) -> bool:
+    """Безопасно проверяет systemd-юнит, в том числе вне Linux."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", unit],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, OSError):
+        return False
+
 
 def _is_enter_pressed() -> bool:
     import select
@@ -1657,34 +1667,45 @@ def menu_monitoring(state: AppState):
             except Exception:
                 pass
                 
-        active_protos = [
-            p for name, p in state.protocols.items()
-            if p.enabled and name not in _MONITORING_EXCLUDED_PROTOCOLS
-        ]
-        protos_count = len(active_protos)
+        transport_plugins = transports()
+        enabled_names = {
+            plugin.meta.name for plugin in transport_plugins
+            if state.protocols.get(plugin.meta.name)
+            and state.protocols[plugin.meta.name].enabled
+        }
         running_count = 0
-        for plugin in enabled(state, PluginCategory.TRANSPORT):
-            if plugin.meta.name in _MONITORING_EXCLUDED_PROTOCOLS:
+        for plugin in transport_plugins:
+            if plugin.meta.name not in enabled_names:
                 continue
             try:
                 running_count += int(plugin.status().running)
             except Exception:
                 pass
         users_count = len(state.users)
+        active_users = sum(not user.blocked for user in state.users)
+        sync_active = _unit_active("hydra-sync-agent.timer")
+        traffic_active = _unit_active("hydra-traffic-daemon.service")
+        warp_active = bool(
+            state.protocols.get("warp") and state.protocols["warp"].enabled
+        )
         
         lines = [
-            f"  📋 {BOLD}Сводный мониторинг и управление лимитами трафика{NC}",
-            "────────────────────────────────────────────────────────",
-            f"  🔌 {BOLD}Работают протоколы:{NC} {GREEN}{running_count}/{protos_count:<3}{NC} │  👥 {BOLD}Учётных записей:{NC} {CYAN}{users_count}{NC}",
-            f"  🚀 {BOLD}Нагрузка Load Avg:{NC}   {YELLOW}{load_str:<3}{NC} │  💾 {BOLD}Память RAM:{NC}     {RED}{ram_str}{NC}"
+            f"  🔌 {BOLD}Протоколы:{NC} {GREEN}{running_count} работают{NC} / {len(enabled_names)} включено",
+            f"  👥 {BOLD}Пользователи:{NC} {CYAN}{active_users} активны{NC} / {users_count} всего",
+            f"  🖥️  {BOLD}Система:{NC} Load Avg {YELLOW}{load_str}{NC}  │  RAM {YELLOW}{ram_str}{NC}",
+            f"  🌐 {BOLD}Маршрутизация:{NC} WARP "
+            f"{f'{GREEN}включён{NC}' if warp_active else f'{DIM}выключен{NC}'}",
+            f"  ⚙️  {BOLD}Фоновые службы:{NC} учёт "
+            f"{f'{GREEN}●{NC}' if traffic_active else f'{DIM}○{NC}'}  синхронизация "
+            f"{f'{GREEN}●{NC}' if sync_active else f'{DIM}○{NC}'}",
         ]
-        panel("💻  Мониторинг системы", lines)
+        panel("💻  Состояние системы", lines)
 
         choice = menu(
             [("1", "📊 Потребление трафика", "Сводная статистика по протоколам и пользователям"),
              ("2", "🔌 Подключения и активность", "Активные сессии и недавние запросы пользователей"),
              ("3", "📈 Живой монитор CPU/RAM", "Нагрузка системы, скорость сети и метрики"),
-             ("4", "🔧 Сервисные настройки", "Управление Clash API, Sync Agent, системные логи"),
+             ("4", "⚙️ Фоновые службы и логи", "Учёт трафика, синхронизация и системные журналы"),
              ("0", "↩ Назад", "")],
             "МОНИТОРИНГ",
         )
@@ -1704,10 +1725,21 @@ def _menu_service_settings(state: AppState):
     while True:
         state = load_state()
         clear()
+        sync_active = _unit_active("hydra-sync-agent.timer")
+        clash_enabled = bool(getattr(state.network, "clash_api_enabled", False))
+        traffic_active = _unit_active("hydra-traffic-daemon.service")
+        panel("Фоновые службы", [
+            kv("Sync Agent:", f"{GREEN}включён 🟢{NC}" if sync_active else f"{DIM}выключен ⚪{NC}"),
+            kv("Учёт трафика:", (
+                f"{GREEN}работает 🟢{NC}" if clash_enabled and traffic_active
+                else f"{YELLOW}включён, служба не работает 🟡{NC}" if clash_enabled
+                else f"{DIM}выключен ⚪{NC}"
+            )),
+        ])
         choice = menu([
             ("1", "📋 Просмотр системных логов", "Sing-Box, Sync-Agent, Fail2ban и др."),
-            ("2", "🔄 Управление Sync Agent", "Контроль фоновой службы синхронизации"),
-            ("3", "🔧 Настройки Clash API", "Локальный порт и секретный ключ статистики"),
+            ("2", "🔄 Sync Agent", "Проверка лимитов, сроков действия и обновление WARP-списков"),
+            ("3", "📊 Учёт трафика (Clash API)", "Локальный API Sing-Box и демон статистики"),
             ("0", "↩ Назад", "")
         ], "СЕРВИСНЫЕ НАСТРОЙКИ")
         
@@ -1734,21 +1766,16 @@ def _show_traffic_combined(state: AppState):
         by_protocol = protocol_totals(state)
         enabled_names = {
             plugin.meta.name for plugin in enabled(state, PluginCategory.TRANSPORT)
-            if plugin.meta.name not in _MONITORING_EXCLUDED_PROTOCOLS
         }
         labels = {
             "amneziawg": "AmneziaWG", "naive": "NaiveProxy",
             "anytls": "AnyTLS", "mieru": "Mieru",
             "trusttunnel": "TrustTunnel", "shadowtls": "ShadowTLS",
-            "telemt": "Telemt",
-        }
-        by_protocol = {
-            name: value for name, value in by_protocol.items()
-            if name not in _MONITORING_EXCLUDED_PROTOCOLS
+            "telemt": "Telemt", "wdtt": "qWDTT",
         }
         order = [
             "amneziawg", "naive", "anytls", "mieru", "trusttunnel",
-            "shadowtls", "telemt",
+            "shadowtls", "telemt", "wdtt",
         ]
         names = [name for name in order if name in enabled_names or by_protocol.get(name, 0)]
         names.extend(sorted(set(by_protocol) - set(names)))
@@ -1854,8 +1881,6 @@ def _show_connections(state: AppState):
         from hydra.services.active_connections import tracked_active_connections
         all_clients.extend(tracked_active_connections(state))
         for p in enabled(state, PluginCategory.TRANSPORT):
-            if p.meta.name in _MONITORING_EXCLUDED_PROTOCOLS:
-                continue
             # These are represented by the attributed Clash API snapshot. ss
             # sees only internal proxy legs and cannot identify their users.
             if p.meta.name == "naive":
@@ -2273,10 +2298,7 @@ def _menu_sync_agent(state: AppState):
     while True:
         clear()
         
-        timer_active = False
-        r_timer = subprocess.run(["systemctl", "is-active", "hydra-sync-agent.timer"], capture_output=True, text=True)
-        if r_timer.returncode == 0 and r_timer.stdout.strip() == "active":
-            timer_active = True
+        timer_active = _unit_active("hydra-sync-agent.timer")
             
         log_path = Path("/var/log/hydra/sync-agent.log")
         last_log_line = "нет логов"
@@ -2295,17 +2317,51 @@ def _menu_sync_agent(state: AppState):
         ]
         panel("Управление Sync Agent", lines)
         
+        toggle_label = "⏹ Отключить Sync Agent" if timer_active else "▶ Включить Sync Agent"
+        toggle_desc = "Остановить периодическую синхронизацию" if timer_active else "Проверять лимиты и сроки каждые 5 минут"
         choice = menu([
-            ("1", "⚡ Запустить синхронизацию сейчас", "Принудительно проверить лимиты и TTL"),
-            ("2", "✅ Включить таймер (каждые 5 мин)", "Создать и запустить systemd timer"),
-            ("3", "❌ Отключить таймер", "Остановить и удалить systemd timer"),
-            ("4", "📋 Показать лог sync-agent", "Последние 30 строк лога sync-agent.log"),
+            ("1", toggle_label, toggle_desc),
+            ("2", "⚡ Запустить сейчас", "Однократно проверить лимиты, сроки и WARP-списки"),
+            ("3", "📋 Показать лог", "Последние 30 строк sync-agent.log"),
             ("0", "↩ Назад", "")
         ], "SYNC AGENT")
         
         if choice == "0":
             break
         elif choice == "1":
+            if timer_active:
+                info("Отключение Sync Agent...")
+                if remove_unit("hydra-sync-agent"):
+                    success("Sync Agent отключён")
+                else:
+                    error("Не удалось отключить Sync Agent")
+            else:
+                project_root = Path(__file__).resolve().parent.parent.parent
+                ok = install_timer("hydra-sync-agent",
+                    f"""[Unit]
+Description=HYDRA Sync Agent
+After=network.target
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory={project_root}
+Environment=PYTHONPATH={project_root}
+ExecStart=/usr/bin/python3 -m hydra.services.sync_agent
+""",
+                    """[Unit]
+Description=HYDRA Sync Agent Timer
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+[Install]
+WantedBy=timers.target
+""")
+                if ok:
+                    success("Sync Agent включён (каждые 5 минут)")
+                else:
+                    error("Не удалось включить Sync Agent")
+            prompt("Нажмите Enter")
+        elif choice == "2":
             info("Запуск ручной синхронизации...")
             try:
                 from hydra.services.sync_agent import run_sync
@@ -2314,38 +2370,7 @@ def _menu_sync_agent(state: AppState):
             except Exception as e:
                 error(f"Ошибка при синхронизации: {e}")
             prompt("Нажмите Enter")
-        elif choice == "2":
-            install_timer("hydra-sync-agent",
-                """[Unit]
-Description=HYDRA Sync Agent
-After=network.target
-[Service]
-Type=oneshot
-User=root
-WorkingDirectory=/opt/hydra
-Environment=PYTHONPATH=/opt/hydra
-ExecStart=/usr/bin/python3 -m hydra.services.sync_agent
-""",
-                """[Unit]
-Description=HYDRA Sync Agent Timer
-[Timer]
-OnCalendar=*:0/5
-Persistent=true
-[Install]
-WantedBy=timers.target
-""")
-            success("Sync Agent таймер установлен и запущен (каждые 5 мин)")
-            prompt("Нажмите Enter")
         elif choice == "3":
-            info("Удаление таймера...")
-            try:
-                remove_unit("hydra-sync-agent.timer")
-                remove_unit("hydra-sync-agent.service")
-                success("Sync Agent таймер удалён")
-            except Exception as e:
-                error(f"Ошибка при удалении: {e}")
-            prompt("Нажмите Enter")
-        elif choice == "4":
             _show_log_file("Sync Agent", str(log_path), 30)
 
 
@@ -2355,59 +2380,37 @@ def _menu_clash_api(state: AppState):
         clear()
         
         enabled_status = getattr(state.network, "clash_api_enabled", False)
-        port = getattr(state.network, "clash_api_port", 9090)
-        secret = getattr(state.network, "clash_api_secret", "")
-        
-        daemon_active = False
-        r_daemon = subprocess.run(["systemctl", "is-active", "hydra-traffic-daemon.service"], capture_output=True, text=True)
-        if r_daemon.returncode == 0 and r_daemon.stdout.strip() == "active":
-            daemon_active = True
+        daemon_active = _unit_active("hydra-traffic-daemon.service")
             
         lines = [
-            kv("Clash API:", f"{GREEN}включен 🟢{NC}" if enabled_status else f"{RED}выключен 🔴{NC}"),
-            kv("Порт (localhost):", str(port)),
-            kv("Секретный ключ:", "••••••••" if secret else "(не установлен)"),
+            kv("Учёт трафика:", f"{GREEN}включён 🟢{NC}" if enabled_status else f"{DIM}выключен ⚪{NC}"),
+            kv("Локальный Clash API:", f"{GREEN}включён{NC}" if enabled_status else f"{DIM}выключен{NC}"),
             kv("Служба статистики:", f"{GREEN}активна 🟢{NC}" if daemon_active else f"{RED}не активна 🔴{NC}"),
         ]
-        panel("Настройки Clash API", lines)
+        panel("Учёт трафика", lines)
         
+        toggle_label = "⏹ Отключить учёт трафика" if enabled_status else "▶ Включить учёт трафика"
+        toggle_desc = "Отключить Clash API и демон статистики" if enabled_status else "Включить локальный Clash API и демон статистики"
         choice = menu([
-            ("1", "Включить / Выключить Clash API", "Включение также запустит фоновую службу сбора статистики"),
-            ("2", "Изменить порт", "Изменить локальный порт API"),
-            ("3", "Изменить секретный ключ", "Задать пароль авторизации"),
+            ("1", toggle_label, toggle_desc),
             ("0", "↩ Назад", "")
-        ], "CLASH API")
+        ], "УЧЁТ ТРАФИКА")
         
         if choice == "0":
             break
         elif choice == "1":
-            state, _ = update_state(lambda latest: setattr(latest.network, "clash_api_enabled", not enabled_status))
+            desired = not enabled_status
+            state, _ = update_state(lambda latest: setattr(latest.network, "clash_api_enabled", desired))
             info("Пересборка конфигурации Sing-Box...")
             from hydra.core.orchestrator import apply_config
-            apply_config(state)
-            success("Статус изменен")
-            prompt("Нажмите Enter")
-        elif choice == "2":
-            try:
-                new_port = int(prompt("Введите новый порт (1024-65535)", str(port)))
-                if 1024 <= new_port <= 65535:
-                    state, _ = update_state(lambda latest: setattr(latest.network, "clash_api_port", new_port))
-                    info("Применение нового порта...")
-                    from hydra.core.orchestrator import apply_config
-                    apply_config(state)
-                    success("Порт изменен")
-                else:
-                    warn("Неверный диапазон.")
-            except ValueError:
-                warn("Некорректное число.")
-            prompt("Нажмите Enter")
-        elif choice == "3":
-            new_secret = prompt("Введите секретный ключ (пусто для сброса)", secret)
-            state, _ = update_state(lambda latest: setattr(latest.network, "clash_api_secret", new_secret))
-            info("Применение ключа...")
-            from hydra.core.orchestrator import apply_config
-            apply_config(state)
-            success("Ключ изменен")
+            if apply_config(state):
+                success("Учёт трафика включён" if desired else "Учёт трафика отключён")
+            else:
+                state, _ = update_state(
+                    lambda latest: setattr(latest.network, "clash_api_enabled", enabled_status)
+                )
+                apply_config(state)
+                error("Не удалось применить настройку; прежнее состояние восстановлено")
             prompt("Нажмите Enter")
 
 

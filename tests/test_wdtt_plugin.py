@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hydra.plugins.wdtt.plugin import (
     WdttPlugin, BIN_PATH, SERVICE_FILE, CONFIG_DIR, CONFIG_FILE, PASSWORDS_FILE,
     DEFAULT_DTLS_PORT, DEFAULT_WG_PORT, DEFAULT_WG_SUBNET, SYSTEM_PASSWORD,
+    WG_INTERFACE,
 )
 from hydra.plugins.base import PluginCategory, ConfigFragment
 from hydra.core.state import AppState, User, PluginState
@@ -38,7 +39,7 @@ def test_plugin_meta():
     assert p.meta.needs_domain is False
 
 
-def test_configure_returns_empty_fragment():
+def test_configure_connects_wdtt_interface_to_common_tproxy():
     p = WdttPlugin()
     user = _make_user("a@x.com", uuid="uuid-a")
     state = _make_state([user])
@@ -46,6 +47,7 @@ def test_configure_returns_empty_fragment():
 
     assert isinstance(frag, ConfigFragment)
     assert frag.nft_tproxy_ports == []
+    assert frag.nft_tproxy_ifaces == [WG_INTERFACE]
     assert frag.inbounds == []
     assert frag.outbounds == []
 
@@ -56,6 +58,7 @@ def test_configure_uses_defaults_without_state():
     state.network.server_ip = "1.2.3.4"
     frag = p.configure(state)
     assert frag.nft_tproxy_ports == []
+    assert frag.nft_tproxy_ifaces == [WG_INTERFACE]
 
 
 def test_configure_with_custom_ports():
