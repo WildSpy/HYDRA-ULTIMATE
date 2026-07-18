@@ -145,7 +145,7 @@ def test_client_link_valid():
     link = p.client_link(user, state)
 
     assert link.startswith("shadowtls://")
-    assert "@google.com:443" in link
+    assert "@naive.example.com:443" in link
     assert "password=" in link
     assert "sni=google.com" in link
 
