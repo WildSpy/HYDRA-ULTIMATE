@@ -43,10 +43,9 @@ socket.getaddrinfo = filtered_getaddrinfo
 def check_system_ipv6() -> bool:
     """Быстрая проверка доступности IPv6 на уровне операционной системы."""
     try:
-        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(("2001:4860:4860::8888", 53))
-        s.close()
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(("2001:4860:4860::8888", 53))
         return True
     except Exception:
         return False
@@ -314,16 +313,17 @@ def run_direct_cmd(title_text: str, cmd: str):
 
 def make_http_request(url: str, method: str = "GET", headers: dict = None, body: str = None, timeout: float = 2.0) -> str:
     """Выполняет HTTP/HTTPS запрос с гибкими заголовками и отключенной валидацией SSL (для обхода перехватов)."""
-    if headers is None:
-        headers = {}
+    headers = dict(headers or {})
     if "User-Agent" not in headers:
         headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        
-    req = urllib.request.Request(url, headers=headers, method=method)
+
+    data = None
     if body:
-        req.data = body.encode("utf-8")
+        data = body.encode("utf-8")
         if "Content-Type" not in headers:
             headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, headers=headers, data=data, method=method)
             
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -467,9 +467,9 @@ def query_primary_geoip(ip: str, service: str) -> str:
 
 def check_custom_service(service_name: str, ip_version: int, system_has_ipv6: bool) -> str:
     """Тестирует геоблокировку популярных стримингов и сервисов через указанную версию IP."""
-    _thread_local.ip_version = ip_version
     if ip_version == 6 and not system_has_ipv6:
         return "—"
+    _thread_local.ip_version = ip_version
         
     def find_key_nested(d, target_key):
         if isinstance(d, dict):
@@ -902,10 +902,9 @@ def test_ip_region():
 
 def is_port_listening(port: int) -> bool:
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.bind(("127.0.0.1", port))
-        s.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.bind(("127.0.0.1", port))
         return False
     except OSError:
         return True
@@ -1416,6 +1415,7 @@ def run_http_speed(url):
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=3.0) as response:
             bytes_downloaded = 0
+            elapsed = 0.0
             while True:
                 chunk = response.read(65536)
                 if not chunk:
@@ -1424,6 +1424,8 @@ def run_http_speed(url):
                 elapsed = time.time() - start_time
                 if elapsed >= 4.0:
                     break
+            if bytes_downloaded and elapsed == 0.0:
+                elapsed = time.time() - start_time
             if elapsed == 0:
                 return 0.0
             speed_bps = (bytes_downloaded * 8) / elapsed
