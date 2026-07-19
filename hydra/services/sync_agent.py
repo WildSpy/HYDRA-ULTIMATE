@@ -140,8 +140,8 @@ def _run_sync(
             if status.enabled:
                 # Проверяем кэш
                 cache_file = Path("/var/lib/hydra/warp_external.json")
-                need_update = True
-                if cache_file.exists():
+                need_update = force_all_checks or not cache_file.exists()
+                if not need_update and cache_file.exists():
                     try:
                         import json
                         data = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -157,9 +157,10 @@ def _run_sync(
                                 need_update = False
                     except Exception:
                         pass
-                
+
                 if need_update:
-                    _log("WARP: Triggering daily auto-update of external rules...")
+                    check_kind = "manual" if force_all_checks else "scheduled"
+                    _log(f"WARP: Triggering {check_kind} update of external rules...")
                     ok, msg = p.update_external_rules()
                     _log(f"WARP: Update result: {msg}")
                     if ok:
@@ -170,6 +171,10 @@ def _run_sync(
                         _log("WARP: Updated rules queued for config apply")
                     else:
                         failures.append(f"обновление WARP: {msg}")
+                else:
+                    _log("WARP: External rules cache is fresh; scheduled update skipped")
+            else:
+                _log("WARP: External rules update skipped because the plugin is disabled")
         except Exception as e:
             _log(f"WARP auto-update check failed: {e}")
             failures.append(f"проверка WARP: {e}")

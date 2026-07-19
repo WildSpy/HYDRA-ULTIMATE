@@ -100,14 +100,20 @@ def test_manual_full_check_ignores_automatic_check_toggles():
         "sync_warp_enabled": False,
         "sync_updates_enabled": False,
     })
-    warp_status = MagicMock(enabled=False)
+    warp_status = MagicMock(enabled=True)
+    cache = MagicMock()
+    cache.exists.return_value = True
+    cache.read_text.return_value = '{"updated_at": "2099-01-01T00:00:00"}'
 
     with patch("hydra.core.state.load_state", return_value=state), \
          patch.object(sync_agent, "update_state", side_effect=_state_updater(state)), \
          patch.object(sync_agent, "check_traffic_limits", return_value=[]) as check_limits, \
          patch.object(sync_agent, "get_enabled", return_value=[]), \
          patch.object(sync_agent, "_log"), \
+         patch.object(sync_agent, "Path", return_value=cache), \
          patch("hydra.plugins.warp.plugin.WarpPlugin.status", return_value=warp_status) as warp_check, \
+         patch("hydra.plugins.warp.plugin.WarpPlugin.update_external_rules", return_value=(True, "ok")) as warp_update, \
+         patch("hydra.core.orchestrator.apply_config", return_value=True), \
          patch("hydra.utils.downloader.latest_release", return_value="v1.13.11-extended-2.1.0") as latest, \
          patch("hydra.core.singbox.get_version", return_value="1.13.11-extended-2.1.0"):
         ok, _ = sync_agent.run_sync(force_all_checks=True, force_update_check=True)
@@ -115,6 +121,7 @@ def test_manual_full_check_ignores_automatic_check_toggles():
     assert ok is True
     check_limits.assert_called_once_with(state)
     warp_check.assert_called_once()
+    warp_update.assert_called_once()
     latest.assert_called_once()
 
 
