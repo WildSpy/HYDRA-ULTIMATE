@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg?style=flat-square)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-lightgrey.svg?style=flat-square)](https://ubuntu.com/)
-[![Tests](https://img.shields.io/badge/tests-538%20passed-brightgreen.svg?style=flat-square)](tests/)
+[![Tests](https://img.shields.io/badge/tests-545%20passed-brightgreen.svg?style=flat-square)](tests/)
 
 **HYDRA** — это автоматизированная модульная платформа развёртывания, оркестрации и администрирования многопротокольных прокси-серверов на базе **Sing-Box** (используется как единое сетевое ядро). 
 
@@ -392,12 +392,26 @@ sudo hydra status
 sudo hydra validate
 sudo hydra plan
 sudo hydra apply --dry-run
+sudo hydra doctor
+sudo hydra upgrade check
 sudo hydra backup
+sudo hydra restore /var/backups/hydra/hydra-backup-*.tar.gz --dry-run
 sudo hydra user list
 ```
 
 `apply --dry-run` только собирает и проверяет план. Изменения выполняются
 только командой `sudo hydra apply`.
+
+Восстановление требует отдельной проверки и явного подтверждения:
+
+```bash
+sudo hydra restore /var/backups/hydra/hydra-backup-20260719.tar.gz --dry-run
+sudo hydra restore /var/backups/hydra/hydra-backup-20260719.tar.gz --yes
+sudo hydra validate
+sudo hydra apply
+```
+
+Перед фактическим восстановлением HYDRA автоматически создаёт страховочную резервную копию.
 
 ## 🔗 Связанные проекты
 

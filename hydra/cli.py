@@ -80,8 +80,16 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("status", help="Show runtime and plugin status as JSON")
     commands.add_parser("validate", help="Validate persisted state")
     commands.add_parser("plan", help="Build a side-effect-free apply plan")
+    commands.add_parser("doctor", help="Run read-only host readiness checks")
     backup = commands.add_parser("backup", help="Create a state and service configuration backup")
     backup.add_argument("--output", type=str, default="", help="Archive path or destination directory")
+    restore = commands.add_parser("restore", help="Validate or restore a HYDRA backup")
+    restore.add_argument("archive", type=str)
+    restore.add_argument("--dry-run", action="store_true", help="Validate and show the restore plan")
+    restore.add_argument("--yes", action="store_true", help="Confirm overwriting files from the archive")
+    upgrade = commands.add_parser("upgrade", help="Check upgrade readiness")
+    upgrade_commands = upgrade.add_subparsers(dest="upgrade_action", required=True)
+    upgrade_commands.add_parser("check")
     apply = commands.add_parser("apply", help="Apply configuration")
     apply.add_argument("--dry-run", action="store_true")
 
@@ -114,6 +122,18 @@ def main(argv: list[str] | None = None) -> int:
             _require_root()
             from hydra.core.backup import create_backup
             payload = create_backup(args.output or None)
+        elif args.command == "restore":
+            _require_root()
+            if not args.dry_run and not args.yes:
+                raise ValueError("restore requires --yes; use --dry-run to inspect the archive")
+            from hydra.core.backup import restore_backup
+            payload = restore_backup(args.archive, dry_run=args.dry_run)
+        elif args.command == "doctor":
+            from hydra.core.doctor import run_doctor
+            payload = run_doctor(state)
+        elif args.command == "upgrade" and args.upgrade_action == "check":
+            from hydra.core.upgrade import check_upgrade
+            payload = check_upgrade(state)
         elif args.command == "apply":
             _require_root()
             from hydra.core.orchestrator import apply_config, last_apply_error

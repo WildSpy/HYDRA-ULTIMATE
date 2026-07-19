@@ -40,3 +40,20 @@ def test_backup_command_dispatches_to_backup_service(capsys):
         assert cli.main(["backup", "--output", "/tmp/hydra.tar.gz"]) == 0
     create.assert_called_once_with("/tmp/hydra.tar.gz")
     assert '"archive": "/tmp/hydra.tar.gz"' in capsys.readouterr().out
+
+
+def test_restore_requires_confirmation(capsys):
+    with patch.object(cli, "load_state", return_value=AppState()), \
+         patch.object(cli, "_require_root"):
+        assert cli.main(["restore", "/tmp/backup.tar.gz"]) == 1
+    assert "restore requires --yes" in capsys.readouterr().out
+
+
+def test_restore_dry_run_dispatches(capsys):
+    result = {"valid": True, "dry_run": True, "changes": 1}
+    with patch.object(cli, "load_state", return_value=AppState()), \
+         patch.object(cli, "_require_root"), \
+         patch("hydra.core.backup.restore_backup", return_value=result) as restore:
+        assert cli.main(["restore", "/tmp/backup.tar.gz", "--dry-run"]) == 0
+    restore.assert_called_once_with("/tmp/backup.tar.gz", dry_run=True)
+    assert '"dry_run": true' in capsys.readouterr().out
