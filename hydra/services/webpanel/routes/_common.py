@@ -54,7 +54,12 @@ def serialize_user(user, state, include_traffic: bool = True) -> dict:
 
 
 def serialize_plugin(p, status_map: dict, state) -> dict:
-    """Базовая карточка плагина (без тяжёлых вызовов)."""
+    """Базовая карточка плагина (без тяжёлых вызовов).
+
+    installed/enabled берутся из AppState (state.protocols) — это авторитетный
+    источник, которым управляет orchestrator.enable/disable, как в TUI.
+    running — из p.status() (реальное состояние службы).
+    """
     st = status_map.get(p.meta.name, {})
     ps = state.protocols.get(p.meta.name)
     return {
@@ -63,10 +68,10 @@ def serialize_plugin(p, status_map: dict, state) -> dict:
         "category": p.meta.category.value,
         "version": p.meta.version,
         "needs_domain": p.meta.needs_domain,
-        "installed": bool(st.get("installed", ps.installed if ps else False)),
-        "enabled": bool(st.get("enabled", ps.enabled if ps else False)),
+        "installed": bool(ps.installed) if ps else bool(st.get("installed", False)),
+        "enabled": bool(ps.enabled) if ps else bool(st.get("enabled", False)),
         "running": bool(st.get("running", False)),
-        "port": int(st.get("port", ps.port if ps else 0) or 0),
+        "port": int((ps.port if ps and ps.port else st.get("port", 0)) or 0),
         "config": dict(ps.config) if ps else {},
     }
 

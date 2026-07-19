@@ -498,7 +498,11 @@ function editUser(u, view) {
   };
 }
 async function showConfigs(email) {
-  const d = await api("GET", "/api/users/" + encodeURIComponent(email) + "/configs");
+  // сразу показываем модалку со спиннером — запрос конфигов может быть небыстрым
+  openModal("Конфиги: " + email, `<div class="empty"><span class="spinner"></span> Загрузка конфигов…</div>`);
+  let d;
+  try { d = await api("GET", "/api/users/" + encodeURIComponent(email) + "/configs"); }
+  catch (e) { $("#task-log").innerHTML = `<div class="empty">Ошибка: ${esc(e.error || e)}</div>`; return; }
   let html = `<div class="field"><label>Ссылка подписки</label>
     <div class="flexrow"><span class="code" style="flex:1">${esc(d.subscription_url || "—")}</span>
     <button class="btn-ghost btn-sm" data-qr="${esc(d.subscription_url || "")}">QR</button></div></div>`;
@@ -512,11 +516,27 @@ async function showConfigs(email) {
   html += `<div id="qr-box" class="qr" style="margin-top:12px"></div>`;
   openModal("Конфиги: " + email, html);
   $$("#task-log [data-copy]").forEach(b => b.onclick = () => { navigator.clipboard.writeText(b.dataset.copy); toast("Скопировано"); });
-  $$("#task-log [data-qr]").forEach(b => b.onclick = async () => {
-    if (!b.dataset.qr) return;
-    try { const r = await api("GET", "/api/qr?text=" + encodeURIComponent(b.dataset.qr)); $("#qr-box").innerHTML = r.svg; }
-    catch (e) { toast(e.error || "QR недоступен", "err"); }
-  });
+  $$("#task-log [data-qr]").forEach(b => b.onclick = () => showQr(b.dataset.qr));
+}
+
+async function showQr(text) {
+  if (!text) return;
+  const box = $("#qr-box");
+  if (box) box.innerHTML = `<span class="spinner"></span> Генерация QR…`;
+  try {
+    const r = await api("GET", "/api/qr?text=" + encodeURIComponent(text));
+    if (box) box.innerHTML = r.svg;
+  } catch (e) {
+    if (box) box.innerHTML = "";
+    if (e.status === 501) {
+      if (confirm("Библиотека qrcode не установлена на сервере. Установить её сейчас?")) {
+        runTask("Установка qrcode", () => api("POST", "/api/system/qrcode/install"),
+          (task) => { if (task.status === "success") { toast("qrcode установлен", "ok"); showQr(text); } });
+      }
+    } else {
+      toast(e.error || "QR недоступен", "err");
+    }
+  }
 }
 
 // ── Мониторинг ─────────────────────────────────────────────────────────────

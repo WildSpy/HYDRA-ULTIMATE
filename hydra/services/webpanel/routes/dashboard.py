@@ -53,8 +53,10 @@ def dashboard(ctx):
 
     def _counts(plugins):
         total = len(plugins)
+        # enabled — авторитетно из AppState (как в TUI), не из состояния службы
         active = sum(1 for p in plugins
-                     if status_map.get(p.meta.name, {}).get("enabled"))
+                     if state.protocols.get(p.meta.name)
+                     and state.protocols[p.meta.name].enabled)
         return {"total": total, "active": active}
 
     users = state.users
