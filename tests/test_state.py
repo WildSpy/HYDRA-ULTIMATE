@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hydra.core.state import (
     AppState, PluginState, User, TelegramConfig, NetworkConfig, SecurityConfig,
-    load_state, save_state, find_user, add_user, get_protocol,
+    load_state, save_state, update_state, find_user, add_user, get_protocol,
     STATE_FILE,
 )
 
@@ -37,6 +37,15 @@ def test_add_and_find_user():
     assert found.email == "test@example.com"
     assert found.uuid == "abc-123"
     assert found.traffic_limit_gb == 10
+
+
+def test_add_user_rejects_duplicate_uuid_for_different_email():
+    import pytest
+    from hydra.core.state import add_user
+
+    state = AppState(users=[User(email="first@example.com", uuid="same")])
+    with pytest.raises(ValueError, match="UUID"):
+        add_user(state, User(email="second@example.com", uuid="same"))
 
 
 def test_add_user_replace():
@@ -113,6 +122,7 @@ def test_stale_settings_save_preserves_newer_traffic_counters(tmp_path):
         latest.users[0].credentials["anytls"] = {"traffic_used_bytes": 500}
         latest.install["traffic_connection_counters"] = {"c1": {"total": 500}}
         save_state(latest)
+        update_state(lambda current: current.install.__setitem__("sync_config_pending", True))
 
         stale.network.domain = "changed.example"
         save_state(stale)
@@ -121,6 +131,13 @@ def test_stale_settings_save_preserves_newer_traffic_counters(tmp_path):
         assert merged.users[0].traffic_used_bytes == 500
         assert merged.users[0].credentials["anytls"]["traffic_used_bytes"] == 500
         assert "c1" in merged.install["traffic_connection_counters"]
+        assert merged.install["sync_config_pending"] is True
+
+        stale_pending = load_state()
+        update_state(lambda current: current.install.pop("sync_config_pending", None))
+        stale_pending.network.domain = "stale.example"
+        save_state(stale_pending)
+        assert "sync_config_pending" not in load_state().install
     finally:
         state_mod.STATE_FILE, state_mod.STATE_DIR = original_file, original_dir
 
@@ -258,6 +275,22 @@ def test_load_recovers_from_backup(tmp_path):
         state_mod.STATE_FILE.write_text("{broken", encoding="utf-8")
 
         assert load_state().network.domain == "backup.example"
+    finally:
+        state_mod.STATE_FILE, state_mod.STATE_DIR = original_file, original_dir
+
+
+def test_load_recovers_from_structurally_invalid_state(tmp_path):
+    import hydra.core.state as state_mod
+
+    original_file, original_dir = state_mod.STATE_FILE, state_mod.STATE_DIR
+    try:
+        state_mod.STATE_FILE = tmp_path / "state.json"
+        state_mod.STATE_DIR = tmp_path
+        state_mod.STATE_FILE.write_text(json.dumps({"version": 2, "users": "invalid"}), encoding="utf-8")
+        state_mod.STATE_FILE.with_suffix(".json.bak").write_text(
+            json.dumps({"version": 2, "users": [], "protocols": {}}), encoding="utf-8"
+        )
+        assert load_state().users == []
     finally:
         state_mod.STATE_FILE, state_mod.STATE_DIR = original_file, original_dir
 

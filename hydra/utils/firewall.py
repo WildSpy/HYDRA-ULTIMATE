@@ -1,7 +1,7 @@
 """
 hydra/utils/firewall.py — Менеджер firewall: авто-выбор UFW/iptables, persist правил.
 
-Логика портирована из legacy vless_installer/modules/naiveproxy.py и mieru.py
+Логика портирована из legacy-модулей NaiveProxy и Mieru
 (_ipt_*/_ufw_* хелперы — идентичны в обоих модулях).
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import subprocess
 import re
 from contextlib import contextmanager
 from pathlib import Path
+from hydra.utils.commands import DEFAULT_TIMEOUT
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -19,7 +20,7 @@ from pathlib import Path
 
 def _run(cmd: list[str], capture: bool = True) -> subprocess.CompletedProcess:
     """Выполнить команду, вернуть CompletedProcess."""
-    return subprocess.run(cmd, capture_output=capture, text=True)
+    return subprocess.run(cmd, capture_output=capture, text=True, timeout=DEFAULT_TIMEOUT)
 
 
 def _ipt_rule_exists(table: str, chain: str, spec: list[str]) -> bool:

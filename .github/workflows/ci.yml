@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast feedback for the normal dev/main push workflow.
+  tests-fast:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.lock
+      - name: Compile
+        run: python -m compileall -q main.py hydra
+      - name: Lint correctness
+        run: ruff check main.py hydra tests
+      - name: Test
+        env:
+          PYTHONFAULTHANDLER: "1"
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -vv --tb=short 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            summary=$(tail -n 40 pytest.log)
+            summary=${summary//'%'/'%25'}
+            summary=${summary//$'\r'/'%0D'}
+            summary=${summary//$'\n'/'%0A'}
+            echo "::error title=Pytest failure::$summary"
+          fi
+          exit "$status"
+
+  # Exercise every supported interpreter before merging a pull request.
+  tests-matrix:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install development dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.lock
+      - name: Compile
+        run: python -m compileall -q main.py hydra
+      - name: Lint correctness
+        run: ruff check main.py hydra tests
+      - name: Test
+        env:
+          PYTHONFAULTHANDLER: "1"
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -vv --tb=short 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            summary=$(tail -n 40 pytest.log)
+            summary=${summary//'%'/'%25'}
+            summary=${summary//$'\r'/'%0D'}
+            summary=${summary//$'\n'/'%0A'}
+            echo "::error title=Pytest failure::$summary"
+          fi
+          exit "$status"
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install --disable-pip-version-check pip-audit==2.10.1
+      - run: pip-audit -r requirements.lock

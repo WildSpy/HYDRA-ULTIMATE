@@ -5,7 +5,27 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from hydra.core.state import AppState, User
-from hydra.services.traffic_daemon import _apply_connection_snapshot, run_daemon
+from hydra.services.traffic_daemon import (
+    _apply_connection_snapshot, _parse_hysteria2_users, _write_log, run_daemon,
+)
+
+
+def test_custom_log_is_bounded_and_keeps_recent_tail(tmp_path):
+    from hydra.services import traffic_daemon
+
+    log = tmp_path / "traffic-daemon.log"
+    backup = tmp_path / "traffic-daemon.log.1"
+    log.write_text("old event\n" * 100, encoding="utf-8")
+
+    with patch.object(traffic_daemon, "TRAFFIC_LOG", log), \
+         patch.object(traffic_daemon, "TRAFFIC_LOG_BACKUP", backup), \
+         patch.object(traffic_daemon, "TRAFFIC_LOG_MAX_BYTES", 128):
+        _write_log("new event")
+
+    assert "new event" in log.read_text(encoding="utf-8")
+    assert backup.exists()
+    assert backup.stat().st_size <= 128
+    assert "old event" in backup.read_text(encoding="utf-8")
 
 
 def test_connection_counters_survive_daemon_restart_without_double_counting():
@@ -60,6 +80,97 @@ def test_late_user_attribution_backfills_uncredited_bytes():
         state, [connection], {"12345": "user@example.com"}, {}, {},
     )
     assert state.users[0].traffic_used_bytes == 350
+
+
+def test_shadowtls_connection_is_attributed_to_authenticated_user():
+    state = AppState(users=[User(email="shadow@example.com", uuid="u-shadow")])
+    connection = {
+        "id": "shadow-connection",
+        "metadata": {
+            "inboundTag": "shadowtls-trojan-in",
+            "host": "cp.cloudflare.com",
+            "destinationPort": "80",
+        },
+        "upload": 120,
+        "download": 480,
+    }
+    shadowtls_users = {
+        ("__id__", "shadow-connection"): "shadow@example.com",
+    }
+
+    assert _apply_connection_snapshot(
+        state, [connection], {}, {}, {}, shadowtls_users,
+    ) is True
+    assert state.users[0].traffic_used_bytes == 600
+    assert state.users[0].credentials["shadowtls"]["traffic_used_bytes"] == 600
+
+
+def test_hysteria2_uses_authenticated_clash_metadata():
+    state = AppState(users=[User(email="hy2@example.com", uuid="hy2-user")])
+    connection = {
+        "id": "hy2-connection",
+        "metadata": {"inboundTag": "hysteria2-in", "user": "hy2@example.com"},
+        "upload": 200,
+        "download": 500,
+    }
+    assert _apply_connection_snapshot(state, [connection], {}, {}, {}) is True
+    assert state.users[0].credentials["hysteria2"]["traffic_used_bytes"] == 700
+
+
+def test_hysteria2_real_clash_metadata_is_attributed_from_logs():
+    state = AppState(users=[User(email="hy2@example.com", uuid="hy2-user")])
+    connection = {
+        "id": "clash-generated-uuid",
+        "metadata": {
+            "type": "hysteria2/hysteria2-in",
+            "sourceIP": "198.51.100.20",
+            "sourcePort": "43123",
+        },
+        "upload": 200,
+        "download": 500,
+    }
+    users = {("198.51.100.20", "43123"): "hy2@example.com"}
+
+    assert _apply_connection_snapshot(
+        state, [connection], {}, {}, {}, {}, users,
+    ) is True
+    record = state.install["traffic_connection_counters"]["clash-generated-uuid"]
+    assert record["protocol"] == "hysteria2"
+    assert record["user"] == "hy2@example.com"
+
+
+def test_parse_hysteria2_users_correlates_tcp_and_udp_log_contexts():
+    lines = [
+        "INFO [123456 0ms] inbound/hysteria2[hysteria2-in]: "
+        "inbound connection from [::ffff:198.51.100.20]:43123",
+        "INFO [123456 1ms] inbound/hysteria2[hysteria2-in]: "
+        "[hy2@example.com] inbound connection to example.com:443",
+        "INFO [789012 0ms] inbound/hysteria2[hysteria2-in]: "
+        "inbound packet connection from 2001:db8::10:53100",
+        "INFO [789012 1ms] inbound/hysteria2[hysteria2-in]: "
+        "[udp@example.com] inbound packet connection to 1.1.1.1:53",
+    ]
+
+    users = _parse_hysteria2_users(lines)
+
+    assert users[("::ffff:198.51.100.20", "43123")] == "hy2@example.com"
+    assert users[("198.51.100.20", "43123")] == "hy2@example.com"
+    assert users[("2001:db8::10", "53100")] == "udp@example.com"
+
+
+def test_snell_inbound_tag_maps_back_to_its_isolated_user():
+    from hydra.plugins.snell.plugin import SnellPlugin
+
+    user = User(email="snell@example.com", uuid="snell-user")
+    state = AppState(users=[user])
+    connection = {
+        "id": "snell-connection",
+        "metadata": {"inboundTag": SnellPlugin()._tag(user)},
+        "upload": 300,
+        "download": 600,
+    }
+    assert _apply_connection_snapshot(state, [connection], {}, {}, {}) is True
+    assert state.users[0].credentials["snell"]["traffic_used_bytes"] == 900
 
 def test_daemon_collects_traffic_from_clash_api():
     state = AppState()

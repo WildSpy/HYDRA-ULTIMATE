@@ -1,12 +1,14 @@
 """
 hydra/utils/downloader.py — Скачивание бинарников с GitHub releases.
 
-Логика портирована из legacy vless_installer/modules/naiveproxy.py
+Логика портирована из legacy-модуля NaiveProxy
 (_download_binary, _get_latest_version).
 """
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import shutil
 import tarfile
 import tempfile
@@ -29,8 +31,33 @@ def latest_release(repo: str, timeout: int = 10) -> str:
         return "unknown"
 
 
-def download(url: str, dest: Path, timeout: int = 120) -> bool:
+def verify_sha256(path: Path, expected: str) -> bool:
+    """Verify a file against a lowercase or uppercase SHA-256 digest."""
+    normalized = expected.removeprefix("sha256:").strip().lower()
+    if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
+        return False
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return False
+    return secrets_compare(digest.hexdigest(), normalized)
+
+
+def secrets_compare(left: str, right: str) -> bool:
+    """Use a constant-time comparison without exposing hashlib internals."""
+    import hmac
+    return hmac.compare_digest(left, right)
+
+
+def download(url: str, dest: Path, timeout: int = 120, *, sha256: str | None = None) -> bool:
     """Скачивает файл по URL в dest. Возвращает True при успехе."""
+    if not sha256 and not _allow_unverified():
+        # Direct URLs cannot be trusted without an out-of-band digest. Keep an
+        # explicit escape hatch for development and emergency recovery.
+        return False
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Скачиваем во временный файл, затем атомарно перемещаем
@@ -39,6 +66,9 @@ def download(url: str, dest: Path, timeout: int = 120) -> bool:
             request = urllib.request.Request(url, headers={"User-Agent": "HYDRA-Installer"})
             with urllib.request.urlopen(request, timeout=timeout) as response, open(tmp, "wb") as output:
                 shutil.copyfileobj(response, output)
+            if sha256 and not verify_sha256(Path(tmp), sha256):
+                Path(tmp).unlink(missing_ok=True)
+                return False
             shutil.move(tmp, str(dest))
             return True
         except Exception:
@@ -46,6 +76,17 @@ def download(url: str, dest: Path, timeout: int = 120) -> bool:
             return False
     except Exception:
         return False
+
+
+def _asset_digest(asset: dict) -> str | None:
+    digest = asset.get("digest")
+    if isinstance(digest, str) and digest.startswith("sha256:"):
+        return digest
+    return None
+
+
+def _allow_unverified() -> bool:
+    return os.environ.get("HYDRA_ALLOW_UNVERIFIED_DOWNLOADS") == "1"
 
 
 def download_github_asset(repo: str, asset_pattern: str, dest: Path) -> bool:
@@ -62,7 +103,10 @@ def download_github_asset(repo: str, asset_pattern: str, dest: Path) -> bool:
 
         for asset in data.get("assets", []):
             if asset_pattern in asset["name"]:
-                return download(asset["browser_download_url"], dest)
+                digest = _asset_digest(asset)
+                if not digest and not _allow_unverified():
+                    return False
+                return download(asset["browser_download_url"], dest, sha256=digest)
 
         return False
     except Exception:
@@ -89,7 +133,10 @@ def download_github_asset_filtered(repo: str, name_filter: callable, dest: Path)
 
         for asset in data.get("assets", []):
             if name_filter(asset["name"]):
-                return download(asset["browser_download_url"], dest)
+                digest = _asset_digest(asset)
+                if not digest and not _allow_unverified():
+                    return False
+                return download(asset["browser_download_url"], dest, sha256=digest)
         return False
     except Exception:
         return False

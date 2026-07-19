@@ -10,6 +10,7 @@ import shutil
 import base64
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 from hydra.core.state import AppState
 
@@ -30,15 +31,18 @@ _INTERNAL_PORTS = {
     "naive": 10443,       # Caddy HTTP app (forward_proxy + file_server)
     "anytls": 20444,      # sing-box anytls (tls OFF)
     "trusttunnel": 20445, # sing-box TrustTunnel TCP/UDP backend (TLS ON)
+    "shadowtls": 20446,   # sing-box ShadowTLS v3
+    "hysteria2": 20447,   # Decoy-only TCP route; Hysteria2 itself stays on UDP
     "sub_server": 9443,
 }
 
 _DECOY_HTTP_PORTS = {
     "anytls": 10801,
     "trusttunnel": 10802,
+    "hysteria2": 10803,
 }
 
-_SOURCE_PRESERVED_BACKENDS = frozenset({"naive", "anytls", "trusttunnel"})
+_SOURCE_PRESERVED_BACKENDS = frozenset({"naive", "anytls", "trusttunnel", "shadowtls"})
 # Disabled after production smoke tests showed that non-local loopback source
 # binding breaks Caddy backend return traffic on supported server kernels.
 # Keep the transactional cleanup code so hosts that applied the experimental
@@ -277,10 +281,25 @@ def _ensure_modern_go() -> bool:
     from hydra.utils.net import detect_arch
     arch = detect_arch()
     go_arch = arch if arch in ("amd64", "arm64") else "amd64"
-    go_url = f"https://go.dev/dl/go{GO_VERSION}.linux-{go_arch}.tar.gz"
+    go_filename = f"go{GO_VERSION}.linux-{go_arch}.tar.gz"
+    go_url = f"https://go.dev/dl/{go_filename}"
 
     from hydra.utils.downloader import download
-    if download(go_url, go_tar):
+    go_digest = None
+    try:
+        request = urllib.request.Request("https://go.dev/dl/?mode=json", headers={"User-Agent": "HYDRA"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            releases = json.loads(response.read())
+        for release in releases:
+            for file_info in release.get("files", []):
+                if file_info.get("filename") == go_filename:
+                    go_digest = file_info.get("sha256")
+                    break
+            if go_digest:
+                break
+    except (OSError, ValueError, TypeError):
+        go_digest = None
+    if go_digest and download(go_url, go_tar, sha256=go_digest):
         extract_root = Path(tempfile.mkdtemp(prefix="hydra-go-", dir="/tmp"))
         current_go = Path("/usr/local/go")
         backup_go = Path(f"/usr/local/go.hydra-previous-{os.getpid()}")
@@ -330,8 +349,8 @@ def install(state: AppState | None = None, *, force: bool = False) -> bool:
     print("  Installing Go compiler...")
     if not _ensure_modern_go():
         print("  Failed to install a modern Go compiler. Trying apt fallback...")
-        subprocess.run(["apt-get", "update"], capture_output=True)
-        subprocess.run(["apt-get", "install", "-y", "golang-go"], capture_output=True)
+        subprocess.run(["apt-get", "update"], capture_output=True, timeout=300)
+        subprocess.run(["apt-get", "install", "-y", "golang-go"], capture_output=True, timeout=300)
 
     print("  Installing xcaddy and building caddy-l4...")
     # Install xcaddy in a local path to avoid global permissions issues
@@ -464,11 +483,11 @@ def needs_mux(state: AppState) -> bool:
     """Returns True if multiplexing is required.
 
     Multiplexing is required if:
-    - anytls or trusttunnel is enabled (to provide fallback decoy protection via Caddy L4)
+    - anytls, trusttunnel or hysteria2 is enabled (to provide a browser-visible decoy via Caddy L4)
     - OR 2+ TLS plugins are active
     - OR sub_domain is configured
     """
-    for name in ("anytls", "trusttunnel"):
+    for name in ("anytls", "trusttunnel", "hysteria2"):
         proto = state.protocols.get(name)
         if proto and proto.enabled:
             if proto.config.get("domain"):
@@ -480,7 +499,12 @@ def needs_mux(state: AppState) -> bool:
             continue
         proto = state.protocols.get(name)
         if proto and proto.enabled:
-            domain = state.network.domain if name == "naive" else proto.config.get("domain")
+            if name == "naive":
+                domain = state.network.domain
+            elif name == "shadowtls":
+                domain = proto.config.get("handshake_sni")
+            else:
+                domain = proto.config.get("domain")
             if domain:
                 count += 1
     sub_domain = getattr(state.network, "sub_domain", "")
@@ -536,7 +560,12 @@ def _collect_backends(state: AppState) -> list[dict]:
             continue
         proto = state.protocols.get(name)
         if proto and proto.enabled:
-            domain = state.network.domain if name == "naive" else proto.config.get("domain", "")
+            if name == "naive":
+                domain = state.network.domain
+            elif name == "shadowtls":
+                domain = proto.config.get("handshake_sni", "")
+            else:
+                domain = proto.config.get("domain", "")
             cert_file = proto.config.get("cert_file", "")
             key_file = proto.config.get("key_file", "")
             if domain:
@@ -589,7 +618,7 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
     # 2. TLS app (load certificates for SNI matching)
     certificates = []
     for b in backends:
-        if b["name"] in ("anytls", "trusttunnel") and b["cert_file"] and b["key_file"]:
+        if b["name"] in ("anytls", "trusttunnel", "hysteria2") and b["cert_file"] and b["key_file"]:
             certificates.append({
                 "certificate": b["cert_file"],
                 "key": b["key_file"]
@@ -610,6 +639,14 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
 
         if name == "naive":
             # Naive route: TLS passthrough -> dial caddy-naive directly
+            l4_routes.append({
+                "match": [{"tls": {"sni": [domain]}}],
+                "handle": [
+                    _proxy_handler(f"127.0.0.1:{port}", preserve_source=True)
+                ]
+            })
+        elif name == "shadowtls":
+            # ShadowTLS: TLS passthrough -> dial sing-box shadowtls directly
             l4_routes.append({
                 "match": [{"tls": {"sni": [domain]}}],
                 "handle": [
@@ -645,6 +682,18 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
         elif name == "trusttunnel":
             # TrustTunnel route: TLS termination -> local HTTP server (reverse_proxy to sing-box + error decoy)
             decoy_port = _DECOY_HTTP_PORTS["trusttunnel"]
+            l4_routes.append({
+                "match": [{"tls": {"sni": [domain]}}],
+                "handle": [
+                    {"handler": "tls"},
+                    _proxy_handler(f"127.0.0.1:{decoy_port}", preserve_source=True)
+                ]
+            })
+        elif name == "hysteria2":
+            # Browsers probe TCP/443, while Hysteria2 itself listens on UDP.
+            # Terminate regular HTTPS here and serve the same decoy used by
+            # the protocol's native HTTP/3 masquerade.
+            decoy_port = _DECOY_HTTP_PORTS["hysteria2"]
             l4_routes.append({
                 "match": [{"tls": {"sni": [domain]}}],
                 "handle": [
@@ -703,7 +752,30 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
         }
 
     # 4. HTTP app (decoy websites & forward_proxy)
-    http_servers = {}
+    http_servers = {
+        "https_redirect": {
+            "listen": [":80"],
+            "automatic_https": {
+                "disable": True,
+                "disable_redirects": True
+            },
+            "routes": [
+                {
+                    "handle": [
+                        {
+                            "handler": "static_response",
+                            "status_code": 308,
+                            "headers": {
+                                "Location": [
+                                    "https://{http.request.host}{http.request.uri}"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    }
 
     # AnyTLS Decoy HTTP server
     if any(b["name"] == "anytls" for b in backends):
@@ -795,6 +867,28 @@ def _generate_config(backends: list[dict], state: AppState) -> dict:
             },
             "logs": {
                 "logger_names": {tt_backend["domain"]: "decoy"}
+            }
+        }
+
+    # Hysteria2 browser-visible HTTPS decoy. The Hysteria2 inbound continues
+    # to serve this directory itself for authenticated-layer HTTP/3 probes.
+    if any(b["name"] == "hysteria2" for b in backends):
+        hysteria2_backend = next(b for b in backends if b["name"] == "hysteria2")
+        http_servers["hysteria2_decoy"] = {
+            "listen": [f"127.0.0.1:{_DECOY_HTTP_PORTS['hysteria2']}"],
+            "automatic_https": {
+                "disable": True,
+                "disable_redirects": True
+            },
+            "routes": [
+                {
+                    "handle": [
+                        {"handler": "file_server", "root": "/var/www/decoy-hysteria2"}
+                    ]
+                }
+            ],
+            "logs": {
+                "logger_names": {hysteria2_backend["domain"]: "decoy"}
             }
         }
 
@@ -932,7 +1026,7 @@ def rebuild(state: AppState) -> bool:
     # 2. Ensure decoy site files exist
     from hydra.core.decoy import ensure_decoy_site
     for b in backends:
-        if b["name"] != "sub_server":
+        if b["name"] not in ("sub_server", "shadowtls"):
             try:
                 ensure_decoy_site(b["name"])
             except Exception as e:

@@ -1,0 +1,31 @@
+name: Linux integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-host-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-dev.lock
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables iptables
+      - name: Run unit suite on Linux
+        run: python -m pytest -q
+      - name: Exercise root, systemd, nftables and backup lifecycle
+        run: sudo --preserve-env=PATH bash .github/scripts/linux-integration-smoke.sh

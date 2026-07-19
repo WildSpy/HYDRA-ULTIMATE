@@ -118,6 +118,31 @@ invalid_domain_name
     written_data = json.loads(mock_cache_path.write_text.call_args[0][0])
     assert written_data["russia"]["domains"] == ["openai.com"]
     assert set(written_data["russia"]["ips"]) == {"1.1.1.1", "192.168.0.0/16"}
+    assert written_data["updated_at"] == written_data["last_attempt_at"]
+
+
+@patch("urllib.request.urlopen")
+@patch("hydra.core.state.load_state")
+@patch("hydra.plugins.warp.plugin.WARP_EXTERNAL_CACHE")
+def test_partial_external_update_is_not_marked_fresh(mock_cache, mock_load_state, urlopen):
+    state = AppState()
+    state.protocols["warp"] = PluginState(config={
+        "list_targets": {"ext:russia": "warp", "ext:geoblock": "warp"},
+    })
+    mock_load_state.return_value = state
+    mock_cache.exists.return_value = False
+
+    response = MagicMock()
+    response.read.return_value = b"openai.com\n"
+    response.__enter__.return_value = response
+    urlopen.side_effect = [response, OSError("temporary failure")]
+
+    ok, _ = WarpPlugin().update_external_rules()
+
+    assert ok is False
+    written = json.loads(mock_cache.write_text.call_args.args[0])
+    assert "last_attempt_at" in written
+    assert "updated_at" not in written
 
 
 @patch("hydra.plugins.warp.plugin.socket.gethostbyname")

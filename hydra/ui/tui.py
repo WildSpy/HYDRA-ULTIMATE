@@ -10,6 +10,7 @@ import re
 import sys
 import shutil
 from typing import Optional
+from hydra import __version__
 
 try:
     import readline
@@ -73,8 +74,8 @@ def _char_width(char: str) -> int:
     if code > 0xffff:
         return 2
     # CJK characters
-    if (0x4e00 <= code <= 0x9fff or 
-        0x3000 <= code <= 0x303f or 
+    if (0x4e00 <= code <= 0x9fff or
+        0x3000 <= code <= 0x303f or
         0xff00 <= code <= 0xffef):
         return 2
     return 1
@@ -90,7 +91,7 @@ def _width(s: str) -> int:
         if 0x1f1e6 <= code <= 0x1f1ff:
             flags_count += 1
         w += _char_width(char)
-    
+
     # Каждая пара региональных индикаторов представляет собой один флаг (2 ячейки).
     # Без корректировки 2 символа давали бы 2 + 2 = 4 ячейки. Вычитаем разницу.
     w -= (flags_count // 2) * 2
@@ -102,12 +103,12 @@ def _fit_line(line: str, max_w: int) -> tuple[str, int]:
     line_w = _width(line)
     if line_w <= max_w:
         return line, line_w
-        
+
     parts = re.split(r"(\033\[[0-9;]*m)", line)
     new_parts = []
     accum_w = 0
     target_w = max_w - 3
-    
+
     for part in parts:
         if not part:
             continue
@@ -174,12 +175,12 @@ def kv(label: str, value: str, label_w: int = 16) -> str:
 def panel(title_text: str, lines: list[str]):
     """Панель состояния с двойными рамками."""
     inner = PANEL_W
-    
+
     # Центрируем заголовок
     title_fit, title_w = _fit_line(title_text, inner - 2)
     pad_left = (inner - title_w) // 2
     pad_right = inner - title_w - pad_left
-    
+
     print()
     print(f"{INDENT}{CYAN}╔{'═' * inner}╗{NC}")
     print(f"{INDENT}{CYAN}║{NC}{' ' * pad_left}{BOLD}{WHITE}{title_fit}{NC}{' ' * pad_right}{CYAN}║{NC}")
@@ -271,7 +272,7 @@ def menu(options: list[tuple[str, str, str]], header: str = "") -> str:
             continue
         key_col = _menu_key(key)
         line = f"  {key_col}  {label}"
-        
+
         plain_line = _strip(line).strip()
         if plain_line and all(c in "─-" for c in plain_line):
             line_fit = f"{DIM}{'─' * (inner - 2)}{NC}"
@@ -280,7 +281,7 @@ def menu(options: list[tuple[str, str, str]], header: str = "") -> str:
         else:
             line_fit, line_w = _fit_line(line, inner - 2)
             pad = inner - 2 - line_w
-            
+
         print(f"{INDENT}{CYAN}║{NC} {line_fit}{' ' * pad} {CYAN}║{NC}")
         if desc:
             import textwrap
@@ -289,7 +290,7 @@ def menu(options: list[tuple[str, str, str]], header: str = "") -> str:
                 wrapped_lines = textwrap.wrap(paragraph, width=desc_width) if paragraph.strip() else [""]
                 for w_line in wrapped_lines:
                     dline = f"       {DIM}{w_line}{NC}"
-                    
+
                     plain_dline = _strip(dline).strip()
                     if plain_dline and all(c in "─-" for c in plain_dline):
                         dline_fit = f"{DIM}{'─' * (inner - 2)}{NC}"
@@ -298,7 +299,7 @@ def menu(options: list[tuple[str, str, str]], header: str = "") -> str:
                     else:
                         dline_fit, dline_w = _fit_line(dline, inner - 2)
                         dpad = inner - 2 - dline_w
-                        
+
                     print(f"{INDENT}{CYAN}║{NC} {dline_fit}{' ' * dpad} {CYAN}║{NC}")
 
     print(f"{INDENT}{CYAN}╚{'═' * inner}╝{NC}")
@@ -310,7 +311,7 @@ def menu(options: list[tuple[str, str, str]], header: str = "") -> str:
         choice = input(f"{INDENT}{CYAN}▸{NC} {BOLD}Выбор{NC}{DIM} ({hint}):{NC} ").strip()
     except (KeyboardInterrupt, EOFError):
         return "0"
-        
+
     if not choice:
         return hint
 

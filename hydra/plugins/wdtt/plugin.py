@@ -21,6 +21,7 @@ from pathlib import Path
 
 from hydra.plugins.base import BasePlugin, PluginMeta, PluginStatus, PluginCategory, ConfigFragment
 from hydra.core.state import AppState, User, load_state, get_protocol
+from hydra.utils import firewall
 
 BIN_PATH = Path("/usr/local/bin/wdtt-server")
 CONFIG_DIR = Path("/etc/wdtt")
@@ -32,6 +33,8 @@ SERVICE_NAME = "wdtt"
 DEFAULT_DTLS_PORT = 56000
 DEFAULT_WG_PORT = 56001
 DEFAULT_WG_SUBNET = "10.66.66.0/16"
+WG_INTERFACE = "wdtt0"
+WG_STATS_DIR = Path(f"/sys/class/net/{WG_INTERFACE}/statistics")
 LOCAL_TUN_PORT = 9000
 SYSTEM_PASSWORD = "hydra-system-wdtt"
 
@@ -47,6 +50,7 @@ class WdttPlugin(BasePlugin):
         category=PluginCategory.TRANSPORT,
         version="2.0.0",
         needs_domain=False,
+        central_apply=False,
     )
 
     def __init__(self):
@@ -174,9 +178,11 @@ class WdttPlugin(BasePlugin):
             "devices": devices,
         }
 
-        # Возвращаем пустой фрагмент: wdtt-server работает независимо,
-        # его трафик не должен заворачиваться в sing-box.
-        return ConfigFragment()
+        # wdtt-server поднимает userspace WireGuard-интерфейс wdtt0. Подключаем
+        # его к тому же TPROXY/Sing-Box pipeline, который используют остальные
+        # туннельные транспорты: так общие DNS/route-правила и WARP применяются
+        # к qWDTT без отдельного набора policy-routing правил.
+        return ConfigFragment(nft_tproxy_ifaces=[WG_INTERFACE])
 
     def apply(self, state: AppState) -> bool:
         if not self._pending_cfg:
@@ -275,6 +281,18 @@ class WdttPlugin(BasePlugin):
 
     def traffic(self, state: AppState) -> dict[str, int]:
         return {}
+
+    def total_traffic(self, state: AppState | None = None) -> int | None:
+        """Возвращает общий RX+TX интерфейса без ложной per-user атрибуции."""
+        try:
+            rx = int((WG_STATS_DIR / "rx_bytes").read_text().strip())
+            tx = int((WG_STATS_DIR / "tx_bytes").read_text().strip())
+            return max(0, rx) + max(0, tx)
+        except (OSError, TypeError, ValueError):
+            # None означает «источник временно недоступен». Ноль здесь нельзя
+            # возвращать: краткий сбой чтения выглядел бы как сброс интерфейса
+            # и привёл бы к повторному начислению всего текущего счётчика.
+            return None
 
     def connected_clients(self) -> list[dict]:
         return []
@@ -404,14 +422,7 @@ class WdttPlugin(BasePlugin):
 
     @staticmethod
     def _ipt_persist(self=None) -> None:
-        if shutil.which("netfilter-persistent"):
-            subprocess.run(["netfilter-persistent", "save"], capture_output=True)
-            return
-        rules_dir = Path("/etc/iptables")
-        rules_dir.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(["iptables-save"], capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout:
-            (rules_dir / "rules.v4").write_text(r.stdout)
+        firewall.persist()
 
     # ── Сборка wdtt-server из исходников Go ─────────────────────────────
 

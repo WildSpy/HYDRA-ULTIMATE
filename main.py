@@ -38,6 +38,9 @@ def check_python() -> None:
 
 def main() -> None:
     """Главная точка входа."""
+    if len(sys.argv) > 1:
+        from hydra.cli import main as cli_main
+        raise SystemExit(cli_main(sys.argv[1:]))
     check_root()
     check_python()
 
@@ -49,6 +52,16 @@ def main() -> None:
     except Exception as e:
         print(f"ERROR: Не удалось загрузить состояние: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # A git/bootstrap update may replace daemon code without changing user
+    # settings. Reconcile its revision-tagged unit once on TUI startup so the
+    # new process is picked up without forcing restarts on every apply_config.
+    if os.name != "nt":
+        try:
+            from hydra.core.orchestrator import reconcile_traffic_daemon
+            reconcile_traffic_daemon(state)
+        except Exception:
+            pass
 
     try:
         main_menu(state)
