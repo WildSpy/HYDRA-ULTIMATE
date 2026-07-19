@@ -106,20 +106,51 @@ def panel_update(ctx):
 
 
 def qr_svg(ctx):
-    """Возвращает QR-код в виде SVG для произвольного текста (ссылки)."""
+    """QR-код в виде SVG. Собирается вручную из матрицы qrcode — без зависимостей
+    от PIL/lxml/svg-фабрик (нужен только чистый пакет qrcode)."""
     text = ctx.require("text")
     try:
-        import io
         import qrcode
-        import qrcode.image.svg
-        img = qrcode.make(text, image_factory=qrcode.image.svg.SvgImage,
-                          box_size=10, border=2)
-        buf = io.BytesIO()
-        img.save(buf)
-        return {"svg": buf.getvalue().decode("utf-8")}
     except ImportError:
         from hydra.services.webpanel.errors import ApiError
         raise ApiError("Библиотека qrcode не установлена на сервере", 501)
+
+    qr = qrcode.QRCode(border=2, box_size=1,
+                       error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(text)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    n = len(matrix)
+    scale = 10
+    size = n * scale
+    rects = []
+    for y, row in enumerate(matrix):
+        for x, val in enumerate(row):
+            if val:
+                rects.append(f'<rect x="{x*scale}" y="{y*scale}" width="{scale}" height="{scale}"/>')
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+           f'viewBox="0 0 {size} {size}" shape-rendering="crispEdges">'
+           f'<rect width="{size}" height="{size}" fill="#ffffff"/>'
+           f'<g fill="#000000">{"".join(rects)}</g></svg>')
+    return {"svg": svg}
+
+
+def install_qrcode(ctx):
+    """Устанавливает библиотеку qrcode через pip (фоновая задача)."""
+    def _job():
+        import subprocess
+        import sys
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "qrcode"],
+                           capture_output=True, text=True, timeout=180)
+        print(r.stdout or "")
+        print(r.stderr or "")
+        if r.returncode != 0:
+            raise RuntimeError("pip install qrcode завершился с ошибкой")
+        # проверяем, что теперь импортируется
+        subprocess.run([sys.executable, "-c", "import qrcode"], check=True)
+        return {"ok": True}
+
+    return {"task_id": ctx.tasks.start("install-qrcode", _job)}
 
 
 ROUTES = [
@@ -132,6 +163,7 @@ ROUTES = [
     ("GET", r"/api/tasks", task_list),
     ("GET", r"/api/tasks/(?P<id>[a-f0-9]+)", task_get),
     ("GET", r"/api/qr", qr_svg),
+    ("POST", r"/api/system/qrcode/install", install_qrcode),
     ("GET", r"/api/system/panel", panel_info),
     ("POST", r"/api/system/panel/update", panel_update),
 ]

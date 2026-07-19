@@ -456,19 +456,27 @@ VIEWS.users = async (view) => {
         </td></tr>`;
     }).join("") || `<tr><td colspan="6" class="empty">Пользователей нет</td></tr>`}
     </tbody></table></div>`;
+  // Перерисовка списка с обработкой ошибки (чтобы список всегда обновлялся).
+  const reload = async () => { try { await VIEWS.users(view); } catch (e) { toast("Не удалось обновить список: " + (e.error || e), "err"); } };
   $("#u-add").onclick = async () => {
     const email = $("#u-email").value.trim(); if (!email) return;
-    try { await api("POST", "/api/users", { email }); toast("Добавлен"); VIEWS.users(view); }
-    catch (e) { toast(e.error, "err"); }
+    const btn = $("#u-add"); btn.disabled = true;
+    try { await api("POST", "/api/users", { email }); toast("Добавлен"); await reload(); }
+    catch (e) { toast(e.error || "Ошибка добавления", "err"); btn.disabled = false; }
   };
   $$("[data-del]", view).forEach(b => b.onclick = async () => {
     if (!confirm("Удалить " + b.dataset.del + "?")) return;
-    await api("DELETE", "/api/users/" + encodeURIComponent(b.dataset.del)); toast("Удалён"); VIEWS.users(view);
+    b.disabled = true;
+    try { await api("DELETE", "/api/users/" + encodeURIComponent(b.dataset.del)); toast("Удалён"); await reload(); }
+    catch (e) { toast(e.error || "Ошибка удаления", "err"); b.disabled = false; }
   });
   $$("[data-block]", view).forEach(b => b.onclick = async () => {
     const u = d.users.find(x => x.email === b.dataset.block);
-    await api("POST", `/api/users/${encodeURIComponent(b.dataset.block)}/${u.blocked ? "unblock" : "block"}`);
-    toast("Готово"); VIEWS.users(view);
+    b.disabled = true;
+    try {
+      await api("POST", `/api/users/${encodeURIComponent(b.dataset.block)}/${u.blocked ? "unblock" : "block"}`);
+      toast("Готово"); await reload();
+    } catch (e) { toast(e.error || "Ошибка", "err"); b.disabled = false; }
   });
   $$("[data-edit]", view).forEach(b => b.onclick = () => editUser(d.users.find(x => x.email === b.dataset.edit), view));
   $$("[data-cfg]", view).forEach(b => b.onclick = () => showConfigs(b.dataset.cfg));
@@ -481,13 +489,20 @@ function editUser(u, view) {
     <div class="btn-row"><button class="btn btn-sm" id="e-save">Сохранить</button></div>`);
   $("#e-save").onclick = async () => {
     const au = $("#e-unblock").checked;
-    await api("PUT", `/api/users/${encodeURIComponent(u.email)}/limit`, { traffic_limit_gb: Number($("#e-lim").value), auto_unblock: au });
-    await api("PUT", `/api/users/${encodeURIComponent(u.email)}/expiry`, { expiry_date: $("#e-exp").value, auto_unblock: au });
-    toast("Сохранено"); $("#task-modal").classList.add("hidden"); VIEWS.users(view);
+    try {
+      await api("PUT", `/api/users/${encodeURIComponent(u.email)}/limit`, { traffic_limit_gb: Number($("#e-lim").value), auto_unblock: au });
+      await api("PUT", `/api/users/${encodeURIComponent(u.email)}/expiry`, { expiry_date: $("#e-exp").value, auto_unblock: au });
+      toast("Сохранено"); $("#task-modal").classList.add("hidden");
+      try { await VIEWS.users(view); } catch (e) { toast("Не удалось обновить список", "err"); }
+    } catch (e) { toast(e.error || "Ошибка сохранения", "err"); }
   };
 }
 async function showConfigs(email) {
-  const d = await api("GET", "/api/users/" + encodeURIComponent(email) + "/configs");
+  // сразу показываем модалку со спиннером — запрос конфигов может быть небыстрым
+  openModal("Конфиги: " + email, `<div class="empty"><span class="spinner"></span> Загрузка конфигов…</div>`);
+  let d;
+  try { d = await api("GET", "/api/users/" + encodeURIComponent(email) + "/configs"); }
+  catch (e) { $("#task-log").innerHTML = `<div class="empty">Ошибка: ${esc(e.error || e)}</div>`; return; }
   let html = `<div class="field"><label>Ссылка подписки</label>
     <div class="flexrow"><span class="code" style="flex:1">${esc(d.subscription_url || "—")}</span>
     <button class="btn-ghost btn-sm" data-qr="${esc(d.subscription_url || "")}">QR</button></div></div>`;
@@ -501,11 +516,27 @@ async function showConfigs(email) {
   html += `<div id="qr-box" class="qr" style="margin-top:12px"></div>`;
   openModal("Конфиги: " + email, html);
   $$("#task-log [data-copy]").forEach(b => b.onclick = () => { navigator.clipboard.writeText(b.dataset.copy); toast("Скопировано"); });
-  $$("#task-log [data-qr]").forEach(b => b.onclick = async () => {
-    if (!b.dataset.qr) return;
-    try { const r = await api("GET", "/api/qr?text=" + encodeURIComponent(b.dataset.qr)); $("#qr-box").innerHTML = r.svg; }
-    catch (e) { toast(e.error || "QR недоступен", "err"); }
-  });
+  $$("#task-log [data-qr]").forEach(b => b.onclick = () => showQr(b.dataset.qr));
+}
+
+async function showQr(text) {
+  if (!text) return;
+  const box = $("#qr-box");
+  if (box) box.innerHTML = `<span class="spinner"></span> Генерация QR…`;
+  try {
+    const r = await api("GET", "/api/qr?text=" + encodeURIComponent(text));
+    if (box) box.innerHTML = r.svg;
+  } catch (e) {
+    if (box) box.innerHTML = "";
+    if (e.status === 501) {
+      if (confirm("Библиотека qrcode не установлена на сервере. Установить её сейчас?")) {
+        runTask("Установка qrcode", () => api("POST", "/api/system/qrcode/install"),
+          (task) => { if (task.status === "success") { toast("qrcode установлен", "ok"); showQr(text); } });
+      }
+    } else {
+      toast(e.error || "QR недоступен", "err");
+    }
+  }
 }
 
 // ── Мониторинг ─────────────────────────────────────────────────────────────
