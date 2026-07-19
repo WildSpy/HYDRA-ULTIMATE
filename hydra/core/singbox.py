@@ -430,23 +430,53 @@ def update_kernel() -> tuple[bool, str]:
     Обновляет ядро sing-box до последней версии с созданием резервной копии и автооткатом.
     Возвращает (success, message).
     """
-    if not SINGBOX_BIN.exists():
+    installed_bin = _find_singbox()
+    if installed_bin is None and SINGBOX_BIN.exists():
+        installed_bin = SINGBOX_BIN
+    if installed_bin is None:
         return False, "Sing-Box не установлен, обновление невозможно"
 
     backup_bin = SINGBOX_BIN.with_suffix(".bak")
     _log("INFO", f"Creating backup of sing-box binary to {backup_bin}")
-    
+
     # 1. Создаем резервную копию бинарника
     try:
         if backup_bin.exists():
             backup_bin.unlink()
-        shutil.copy2(SINGBOX_BIN, backup_bin)
+        shutil.copy2(installed_bin, backup_bin)
     except Exception as e:
         _log("ERROR", f"Failed to create backup: {e}")
         return False, f"Ошибка создания резервной копии: {e}"
 
     # Запоминаем, был ли сервис запущен до обновления
     was_running = is_running()
+
+    def rollback(reason: str) -> tuple[bool, str]:
+        """Restore the previous binary and verify the previous service state."""
+        _log("ERROR", f"{reason}; rolling back to backup...")
+        try:
+            stop()
+        except Exception:
+            pass
+        try:
+            if SINGBOX_BIN.exists():
+                SINGBOX_BIN.unlink()
+            shutil.copy2(backup_bin, SINGBOX_BIN)
+            SINGBOX_BIN.chmod(0o755)
+        except Exception as rb_err:
+            _log("CRITICAL", f"Rollback failed: {rb_err}")
+            return False, f"{reason}. Сбой восстановления старого ядра: {rb_err}"
+
+        if was_running:
+            try:
+                restored = start()
+            except Exception as rb_err:
+                restored = False
+                _log("CRITICAL", f"Restored service start failed: {rb_err}")
+            if not restored:
+                _log("CRITICAL", "Old binary was restored, but sing-box did not start")
+                return False, f"{reason}. Старое ядро восстановлено, но служба не запустилась."
+        return False, f"{reason}. Выполнен откат."
 
     # 2. Скачиваем и устанавливаем обновление
     success_install = False
@@ -458,82 +488,25 @@ def update_kernel() -> tuple[bool, str]:
         success_install = False
 
     if not success_install:
-        # Откат
-        _log("ERROR", "Installation failed, rolling back to backup...")
-        try:
-            stop()
-        except Exception:
-            pass
-        try:
-            if backup_bin.exists():
-                if SINGBOX_BIN.exists():
-                    SINGBOX_BIN.unlink()
-                shutil.copy2(backup_bin, SINGBOX_BIN)
-                SINGBOX_BIN.chmod(0o755)
-            if was_running:
-                start()
-            return False, "Не удалось скачать или распаковать обновление. Выполнен откат."
-        except Exception as rb_err:
-            _log("CRITICAL", f"Rollback failed: {rb_err}")
-            return False, f"Ошибка при установке и сбой отката: {rb_err}"
+        return rollback("Не удалось скачать или распаковать обновление")
 
     # 3. Верифицируем новый бинарник
     new_version = get_version()
     if not new_version:
-        _log("ERROR", "New binary verification failed (cannot get version), rolling back...")
-        try:
-            stop()
-        except Exception:
-            pass
-        try:
-            if SINGBOX_BIN.exists():
-                SINGBOX_BIN.unlink()
-            shutil.copy2(backup_bin, SINGBOX_BIN)
-            SINGBOX_BIN.chmod(0o755)
-            if was_running:
-                start()
-            return False, "Новый бинарник не запускается. Выполнен откат."
-        except Exception as rb_err:
-            return False, f"Новый бинарник поврежден и сбой отката: {rb_err}"
+        return rollback("Новый бинарник не запускается")
 
     # 4. Проверяем валидность конфига
     if SINGBOX_CONFIG.exists():
         r = _run([str(SINGBOX_BIN), "check", "-c", str(SINGBOX_CONFIG)])
         if r.returncode != 0:
             _log("ERROR", f"New binary rejected existing config, rolling back. Stderr: {r.stderr}")
-            try:
-                stop()
-            except Exception:
-                pass
-            try:
-                if SINGBOX_BIN.exists():
-                    SINGBOX_BIN.unlink()
-                shutil.copy2(backup_bin, SINGBOX_BIN)
-                SINGBOX_BIN.chmod(0o755)
-                if was_running:
-                    start()
-                return False, "Конфигурация несовместима с новым ядром. Выполнен откат."
-            except Exception as rb_err:
-                return False, f"Конфигурация несовместима и сбой отката: {rb_err}"
+            return rollback("Конфигурация несовместима с новым ядром")
 
     # 5. Перезапуск и проверка службы
     if was_running:
         _log("INFO", "Restarting service and checking status...")
         if not start():
-            _log("ERROR", "Service failed to start with new binary, rolling back...")
-            try:
-                stop()
-            except Exception:
-                pass
-            try:
-                if SINGBOX_BIN.exists():
-                    SINGBOX_BIN.unlink()
-                shutil.copy2(backup_bin, SINGBOX_BIN)
-                SINGBOX_BIN.chmod(0o755)
-                start()
-                return False, "Служба не смогла запуститься с новым ядром. Выполнен откат."
-            except Exception as rb_err:
-                return False, f"Служба не запустилась и сбой отката: {rb_err}"
+            return rollback("Служба не смогла запуститься с новым ядром")
 
     # Очистка
     try:

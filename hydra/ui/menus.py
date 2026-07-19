@@ -2717,6 +2717,35 @@ def _watch_journal(title_text: str, unit: str):
                 process.kill()
 
 
+def _sync_agent_log_snapshot(
+    log_path: Path,
+    now_timestamp: float | None = None,
+) -> tuple[str, str, bool]:
+    """Return the latest non-empty log line and its freshness."""
+    lines, message = _read_log_source("file", str(log_path), 5)
+    last_line = next((line for line in reversed(lines) if line.strip()), "")
+    if not last_line:
+        return message or "нет логов", "нет данных", True
+
+    try:
+        current = datetime.now().timestamp() if now_timestamp is None else now_timestamp
+        age_seconds = max(0, int(current - log_path.stat().st_mtime))
+    except OSError:
+        return last_line, "время неизвестно", True
+
+    if age_seconds < 60:
+        freshness = "только что"
+    elif age_seconds < 3600:
+        freshness = f"{age_seconds // 60} мин назад"
+    elif age_seconds < 86400:
+        freshness = f"{age_seconds // 3600} ч назад"
+    else:
+        freshness = f"{age_seconds // 86400} дн назад"
+    # The timer runs every five minutes; after two missed intervals the status
+    # should visibly indicate that the displayed record is no longer current.
+    return last_line, freshness, age_seconds > 600
+
+
 def _menu_sync_agent(state: AppState):
     while True:
         state = load_state()
@@ -2725,19 +2754,14 @@ def _menu_sync_agent(state: AppState):
         timer_active = _unit_active("hydra-sync-agent.timer")
             
         log_path = Path("/var/log/hydra/sync-agent.log")
-        last_log_line = "нет логов"
-        if log_path.exists():
-            try:
-                lines = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-                if lines:
-                    last_log_line = lines[-1]
-            except Exception:
-                pass
+        last_log_line, log_freshness, log_stale = _sync_agent_log_snapshot(log_path)
+        freshness_color = RED if timer_active and log_stale else DIM
                 
         lines = [
             kv("Таймер (5 мин):", f"{GREEN}активен 🟢{NC}" if timer_active else f"{RED}отключен 🔴{NC}"),
             kv("Лог-файл:", f"{_bytes_auto(log_path.stat().st_size) if log_path.exists() else 'не создан'}"),
             kv("Последняя запись:", f"{DIM}{last_log_line}{NC}"),
+            kv("Актуальность:", f"{freshness_color}{log_freshness}{NC}"),
         ]
         panel("Управление Sync Agent", lines)
         
@@ -2750,7 +2774,7 @@ def _menu_sync_agent(state: AppState):
         
         choice = menu([
             ("1", toggle_label, toggle_desc),
-            ("2", "⚡ Запустить сейчас", "Однократно проверить лимиты, сроки и WARP-списки"),
+            ("2", "⚡ Запустить сейчас", "Однократно проверить лимиты, сроки, WARP и обновление Sing-Box"),
             ("3", "📋 Показать лог", "Последние 30 строк sync-agent.log"),
             ("-", "", ""),
             ("4", f"🔄 Автообновление списков WARP: {GREEN}[ВКЛ]{NC}" if warp_auto else f"🔄 Автообновление списков WARP: {RED}[ВЫКЛ]{NC}",
@@ -2801,22 +2825,31 @@ WantedBy=timers.target
             info("Запуск ручной синхронизации...")
             try:
                 from hydra.services.sync_agent import run_sync
-                run_sync(force_update_check=True)
-                success("Синхронизация успешно выполнена")
+                ok, message = run_sync(
+                    force_update_check=True,
+                    force_all_checks=True,
+                )
+                if ok:
+                    success("Синхронизация успешно выполнена")
+                else:
+                    warn(f"Синхронизация завершена с ошибками: {message}")
             except Exception as e:
                 error(f"Ошибка при синхронизации: {e}")
             prompt("Нажмите Enter")
         elif choice == "3":
             _show_log_file("Sync Agent", str(log_path), 30)
         elif choice == "4":
-            state.install["sync_warp_enabled"] = not warp_auto
-            save_state(state)
+            state, _ = update_state(
+                lambda latest: latest.install.__setitem__("sync_warp_enabled", not warp_auto)
+            )
         elif choice == "5":
-            state.install["sync_limits_enabled"] = not limits_auto
-            save_state(state)
+            state, _ = update_state(
+                lambda latest: latest.install.__setitem__("sync_limits_enabled", not limits_auto)
+            )
         elif choice == "6":
-            state.install["sync_updates_enabled"] = not updates_auto
-            save_state(state)
+            state, _ = update_state(
+                lambda latest: latest.install.__setitem__("sync_updates_enabled", not updates_auto)
+            )
 
 
 def _menu_clash_api(state: AppState):

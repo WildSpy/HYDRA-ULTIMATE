@@ -155,3 +155,46 @@ def test_update_kernel_fail_service_start(mock_singbox_paths):
         assert "Служба не смогла запуститься" in msg
         assert bin_path.read_text() == "original binary content"
         assert mock_start.call_count == 2
+
+
+def test_update_kernel_reports_failed_service_restore(mock_singbox_paths):
+    bin_path, _ = mock_singbox_paths
+
+    def mock_install_fail(force=False):
+        bin_path.write_text("corrupted content")
+        return False
+
+    with patch("hydra.core.singbox.is_running", return_value=True), \
+         patch("hydra.core.singbox.install", side_effect=mock_install_fail), \
+         patch("hydra.core.singbox.stop"), \
+         patch("hydra.core.singbox.start", return_value=False):
+        success, msg = update_kernel()
+
+    assert success is False
+    assert "служба не запустилась" in msg
+    assert bin_path.read_text() == "original binary content"
+
+
+def test_update_kernel_accepts_binary_found_outside_usr_local(tmp_path):
+    installed_bin = tmp_path / "usr-bin-sing-box"
+    target_bin = tmp_path / "usr-local-sing-box"
+    config_path = tmp_path / "config.json"
+    installed_bin.write_text("system binary")
+    config_path.write_text("{}")
+
+    def mock_install_success(force=False):
+        target_bin.write_text("new extended binary")
+        return True
+
+    run_result = MagicMock(returncode=0)
+    with patch("hydra.core.singbox._find_singbox", return_value=installed_bin), \
+         patch("hydra.core.singbox.SINGBOX_BIN", target_bin), \
+         patch("hydra.core.singbox.SINGBOX_CONFIG", config_path), \
+         patch("hydra.core.singbox.is_running", return_value=False), \
+         patch("hydra.core.singbox.install", side_effect=mock_install_success), \
+         patch("hydra.core.singbox.get_version", return_value="1.13.11-extended-2.1.0"), \
+         patch("hydra.core.singbox._run", return_value=run_result):
+        success, _ = update_kernel()
+
+    assert success is True
+    assert target_bin.read_text() == "new extended binary"
