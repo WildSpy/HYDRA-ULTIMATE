@@ -474,9 +474,6 @@ class AmneziaWGPlugin(BasePlugin):
             "preshared_key": preshared_key,
         }
         
-        from hydra.core.state import save_state
-        save_state(state)
-        
         return user.credentials[cred_key]
 
     def _server_pubkey_for_conf(self, conf_path: Path) -> str:
