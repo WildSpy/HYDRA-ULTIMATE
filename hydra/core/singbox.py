@@ -401,7 +401,155 @@ def status_text() -> str:
     """Возвращает текстовый статус Sing-Box."""
     version = get_version()
     running = is_running()
+    state = load_state()
+    update_suffix = ""
+    if state.install.get("singbox_update_available") and version:
+        update_suffix = " (Доступно обновление)"
     return (
-        f"Sing-Box: {version or 'не установлен'} | "
+        f"Sing-Box: {version or 'не установлен'}{update_suffix} | "
         f"{'✓ запущен' if running else '✗ остановлен'}"
     )
+
+
+def parse_version(v_str: Optional[str]) -> tuple[int, ...]:
+    """Парсит строку версии в кортеж чисел для сравнения."""
+    if not v_str:
+        return (0,)
+    import re
+    match = re.search(r'(\d+(?:\.\d+)+)', v_str)
+    if match:
+        try:
+            return tuple(map(int, match.group(1).split('.')))
+        except ValueError:
+            pass
+    return (0,)
+
+
+def update_kernel() -> tuple[bool, str]:
+    """
+    Обновляет ядро sing-box до последней версии с созданием резервной копии и автооткатом.
+    Возвращает (success, message).
+    """
+    if not SINGBOX_BIN.exists():
+        return False, "Sing-Box не установлен, обновление невозможно"
+
+    backup_bin = SINGBOX_BIN.with_suffix(".bak")
+    _log("INFO", f"Creating backup of sing-box binary to {backup_bin}")
+    
+    # 1. Создаем резервную копию бинарника
+    try:
+        if backup_bin.exists():
+            backup_bin.unlink()
+        shutil.copy2(SINGBOX_BIN, backup_bin)
+    except Exception as e:
+        _log("ERROR", f"Failed to create backup: {e}")
+        return False, f"Ошибка создания резервной копии: {e}"
+
+    # Запоминаем, был ли сервис запущен до обновления
+    was_running = is_running()
+
+    # 2. Скачиваем и устанавливаем обновление
+    success_install = False
+    try:
+        # install(force=True) выполняет скачивание, остановку и замену
+        success_install = install(force=True)
+    except Exception as e:
+        _log("ERROR", f"Installation failed during update: {e}")
+        success_install = False
+
+    if not success_install:
+        # Откат
+        _log("ERROR", "Installation failed, rolling back to backup...")
+        try:
+            stop()
+        except Exception:
+            pass
+        try:
+            if backup_bin.exists():
+                if SINGBOX_BIN.exists():
+                    SINGBOX_BIN.unlink()
+                shutil.copy2(backup_bin, SINGBOX_BIN)
+                SINGBOX_BIN.chmod(0o755)
+            if was_running:
+                start()
+            return False, "Не удалось скачать или распаковать обновление. Выполнен откат."
+        except Exception as rb_err:
+            _log("CRITICAL", f"Rollback failed: {rb_err}")
+            return False, f"Ошибка при установке и сбой отката: {rb_err}"
+
+    # 3. Верифицируем новый бинарник
+    new_version = get_version()
+    if not new_version:
+        _log("ERROR", "New binary verification failed (cannot get version), rolling back...")
+        try:
+            stop()
+        except Exception:
+            pass
+        try:
+            if SINGBOX_BIN.exists():
+                SINGBOX_BIN.unlink()
+            shutil.copy2(backup_bin, SINGBOX_BIN)
+            SINGBOX_BIN.chmod(0o755)
+            if was_running:
+                start()
+            return False, "Новый бинарник не запускается. Выполнен откат."
+        except Exception as rb_err:
+            return False, f"Новый бинарник поврежден и сбой отката: {rb_err}"
+
+    # 4. Проверяем валидность конфига
+    if SINGBOX_CONFIG.exists():
+        r = _run([str(SINGBOX_BIN), "check", "-c", str(SINGBOX_CONFIG)])
+        if r.returncode != 0:
+            _log("ERROR", f"New binary rejected existing config, rolling back. Stderr: {r.stderr}")
+            try:
+                stop()
+            except Exception:
+                pass
+            try:
+                if SINGBOX_BIN.exists():
+                    SINGBOX_BIN.unlink()
+                shutil.copy2(backup_bin, SINGBOX_BIN)
+                SINGBOX_BIN.chmod(0o755)
+                if was_running:
+                    start()
+                return False, "Конфигурация несовместима с новым ядром. Выполнен откат."
+            except Exception as rb_err:
+                return False, f"Конфигурация несовместима и сбой отката: {rb_err}"
+
+    # 5. Перезапуск и проверка службы
+    if was_running:
+        _log("INFO", "Restarting service and checking status...")
+        if not start():
+            _log("ERROR", "Service failed to start with new binary, rolling back...")
+            try:
+                stop()
+            except Exception:
+                pass
+            try:
+                if SINGBOX_BIN.exists():
+                    SINGBOX_BIN.unlink()
+                shutil.copy2(backup_bin, SINGBOX_BIN)
+                SINGBOX_BIN.chmod(0o755)
+                start()
+                return False, "Служба не смогла запуститься с новым ядром. Выполнен откат."
+            except Exception as rb_err:
+                return False, f"Служба не запустилась и сбой отката: {rb_err}"
+
+    # Очистка
+    try:
+        backup_bin.unlink(missing_ok=True)
+    except Exception as e:
+        _log("WARNING", f"Failed to remove backup file: {e}")
+
+    try:
+        from hydra.core.state import update_state
+        def reset_update_flag(latest):
+            latest.install.pop("singbox_update_available", None)
+            latest.install.pop("singbox_latest_version", None)
+            return True
+        update_state(reset_update_flag)
+    except Exception as e:
+        _log("WARNING", f"Failed to reset update flags in state: {e}")
+
+    return True, f"Ядро успешно обновлено до версии {new_version}"
+

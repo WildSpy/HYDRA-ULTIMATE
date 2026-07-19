@@ -530,31 +530,45 @@ def main_menu(state: AppState):
 
 def menu_core(state: AppState):
     while True:
+        state = load_state()
         clear()
         ok_i = singbox_installed()
         ok_r = is_running()
         ver = singbox_version()
 
+        update_available = state.install.get("singbox_update_available", False)
+        latest_version = state.install.get("singbox_latest_version", "")
+
+        ver_text = ver or "—"
+        if ok_i and update_available:
+            ver_text += f" {YELLOW}(Доступно обновление){NC}"
+
         panel("Sing-Box", [
             kv("Статус:", f"{_ok(ok_r)} {'запущен' if ok_r else 'остановлен'}"),
-            kv("Версия:", ver or "—"),
+            kv("Версия:", ver_text),
             kv("Конфиг:", f"{DIM}/etc/sing-box/config.json{NC}"),
             kv("Лог:", f"{DIM}journalctl -u sing-box{NC}"),
         ])
 
-        choice = menu(
-            [
-                ("1", "📦 Установить Sing-Box Extended" if not ok_i else "🔄 Переустановить",
-                 "shtorm-7/sing-box-extended"),
-                ("2", "▶️  Запустить" if not ok_r else "⏸️  Остановить", ""),
-                ("3", "🔄 Применить конфиг",
-                 "Собрать /etc/sing-box/config.json и перезагрузить"),
-                ("4", "🚀 Оптимизировать сеть", "BBR/FQ, TCP/UDP-буферы и очереди в один клик"),
-                ("5", "↩️  Откатить оптимизацию сети", "Восстановить параметры до первого применения"),
-                ("0", "↩ Назад", ""),
-            ],
-            "ЯДРО И СИСТЕМА",
-        )
+        menu_items = [
+            ("1", "📦 Установить Sing-Box Extended" if not ok_i else "🔄 Переустановить",
+             "shtorm-7/sing-box-extended"),
+            ("2", "▶️  Запустить" if not ok_r else "⏸️  Остановить", ""),
+            ("3", "🔄 Применить конфиг",
+             "Собрать /etc/sing-box/config.json и перезагрузить"),
+            ("4", "🚀 Оптимизировать сеть", "BBR/FQ, TCP/UDP-буферы и очереди в один клик"),
+            ("5", "↩️  Откатить оптимизацию сети", "Восстановить параметры до первого применения"),
+        ]
+
+        if ok_i:
+            if update_available:
+                menu_items.append(("6", "🆙 Установить обновление", f"Доступна версия sing-box-extended {latest_version}"))
+            else:
+                menu_items.append(("X", "🆙 Установить обновления", "Установлена последняя версия sing-box-extended"))
+
+        menu_items.append(("0", "↩ Назад", ""))
+
+        choice = menu(menu_items, "ЯДРО И СИСТЕМА")
 
         if choice == "0":
             return
@@ -569,6 +583,21 @@ def menu_core(state: AppState):
             else:
                 error("Не удалось установить")
             prompt("Нажмите Enter")
+        elif choice == "6" and ok_i and update_available:
+            info("Устанавливаю обновление Sing-Box...")
+            from hydra.core.singbox import update_kernel
+            ok, msg = update_kernel()
+            if ok:
+                success(msg)
+                if orchestrator.apply_config(state):
+                    success("Конфигурация пересобрана и применена")
+                else:
+                    warn("Внимание: не удалось автоматически применить конфиг")
+            else:
+                error(msg)
+            prompt("Нажмите Enter")
+        elif choice == "X" and ok_i and not update_available:
+            continue
         elif choice == "2":
             if ok_r:
                 from hydra.core.singbox import stop
@@ -2690,6 +2719,7 @@ def _watch_journal(title_text: str, unit: str):
 
 def _menu_sync_agent(state: AppState):
     while True:
+        state = load_state()
         clear()
         
         timer_active = _unit_active("hydra-sync-agent.timer")
@@ -2711,12 +2741,24 @@ def _menu_sync_agent(state: AppState):
         ]
         panel("Управление Sync Agent", lines)
         
+        warp_auto = state.install.get("sync_warp_enabled", True)
+        limits_auto = state.install.get("sync_limits_enabled", True)
+        updates_auto = state.install.get("sync_updates_enabled", True)
+
         toggle_label = "⏹ Отключить Sync Agent" if timer_active else "▶ Включить Sync Agent"
         toggle_desc = "Остановить периодическую синхронизацию" if timer_active else "Проверять лимиты и сроки каждые 5 минут"
+        
         choice = menu([
             ("1", toggle_label, toggle_desc),
             ("2", "⚡ Запустить сейчас", "Однократно проверить лимиты, сроки и WARP-списки"),
             ("3", "📋 Показать лог", "Последние 30 строк sync-agent.log"),
+            ("-", "", ""),
+            ("4", f"🔄 Автообновление списков WARP: {GREEN}[ВКЛ]{NC}" if warp_auto else f"🔄 Автообновление списков WARP: {RED}[ВЫКЛ]{NC}",
+             "Раз в 24 часа скачивать свежие правила WARP"),
+            ("5", f"👥 Автопроверка лимитов: {GREEN}[ВКЛ]{NC}" if limits_auto else f"👥 Автопроверка лимитов: {RED}[ВЫКЛ]{NC}",
+             "Блокировать пользователей при превышении трафика/TTL"),
+            ("6", f"🆙 Автопроверка обновлений ядра: {GREEN}[ВКЛ]{NC}" if updates_auto else f"🆙 Автопроверка обновлений ядра: {RED}[ВЫКЛ]{NC}",
+             "Раз в 24 часа проверять наличие обновлений Sing-Box"),
             ("0", "↩ Назад", "")
         ], "SYNC AGENT")
         
@@ -2759,13 +2801,22 @@ WantedBy=timers.target
             info("Запуск ручной синхронизации...")
             try:
                 from hydra.services.sync_agent import run_sync
-                run_sync()
+                run_sync(force_update_check=True)
                 success("Синхронизация успешно выполнена")
             except Exception as e:
                 error(f"Ошибка при синхронизации: {e}")
             prompt("Нажмите Enter")
         elif choice == "3":
             _show_log_file("Sync Agent", str(log_path), 30)
+        elif choice == "4":
+            state.install["sync_warp_enabled"] = not warp_auto
+            save_state(state)
+        elif choice == "5":
+            state.install["sync_limits_enabled"] = not limits_auto
+            save_state(state)
+        elif choice == "6":
+            state.install["sync_updates_enabled"] = not updates_auto
+            save_state(state)
 
 
 def _menu_clash_api(state: AppState):
