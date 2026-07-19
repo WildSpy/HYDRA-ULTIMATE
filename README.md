@@ -1,6 +1,6 @@
 # 🐙 HYDRA v2.5.0 — Multi-Protocol Proxy & Routing Orchestrator
 
-[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg?style=flat-square)](https://github.com/WildSpy/HYDRA-ULTIMATE)
+[![Version](https://img.shields.io/badge/version-2.5.1-blue.svg?style=flat-square)](https://github.com/WildSpy/HYDRA-ULTIMATE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg?style=flat-square)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-lightgrey.svg?style=flat-square)](https://ubuntu.com/)
