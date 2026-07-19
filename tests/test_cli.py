@@ -23,7 +23,10 @@ def test_validate_command_prints_json(capsys):
 
 
 def test_user_list_does_not_require_root(capsys):
-    state = AppState(users=[User(email="u@example.com", uuid="u1")])
+    state = AppState(users=[User(email="u@example.com", uuid="u1", credentials={"naive": {"password": "secret"}})])
     with patch.object(cli, "load_state", return_value=state):
         assert cli.main(["user", "list"]) == 0
-    assert "u@example.com" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "u@example.com" in output
+    assert "secret" not in output
+    assert '"protocols": [\n        "naive"' in output

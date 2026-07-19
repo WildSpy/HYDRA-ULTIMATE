@@ -10,6 +10,7 @@ import uuid
 from dataclasses import asdict
 
 from hydra.core.state import AppState, User, load_state, validate_state
+from hydra.core.status import build_status, public_user
 
 
 def _print(payload: object) -> None:
@@ -45,21 +46,14 @@ def build_plan(state: AppState) -> dict:
 
 
 def _status(state: AppState) -> dict:
-    from hydra.plugins.registry import status_all
-
-    return {
-        "version": state.version,
-        "users": len(state.users),
-        "network": asdict(state.network),
-        "plugins": status_all(),
-    }
+    return build_status(state)
 
 
 def _user_command(args: argparse.Namespace, state: AppState) -> dict:
     from hydra.core import orchestrator
 
     if args.user_action == "list":
-        return {"users": [asdict(user) for user in state.users]}
+        return {"users": [public_user(user) for user in state.users]}
     _require_root()
     if args.user_action == "add":
         user = User(
