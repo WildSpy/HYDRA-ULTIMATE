@@ -22,7 +22,7 @@ except ImportError:
 
 def _detect_colors() -> dict:
     keys = ("RED", "GREEN", "YELLOW", "CYAN", "BLUE", "MAGENTA",
-            "BOLD", "DIM", "WHITE", "TEXT", "NC")
+            "BOLD", "DIM", "WHITE", "NC")
     if not sys.stdout.isatty():
         return {k: "" for k in keys}
 
@@ -31,25 +31,22 @@ def _detect_colors() -> dict:
         return {
             "RED": "\033[0;31m", "GREEN": "\033[0;32m", "YELLOW": "\033[0;33m",
             "CYAN": "\033[0;34m", "BLUE": "\033[0;35m", "MAGENTA": "\033[0;35m",
-            "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[0;30m",
-            "TEXT": "\033[0;30m", "NC": "\033[0m",
+            "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[0;30m", "NC": "\033[0m",
         }
     return {
         "RED": "\033[0;31m", "GREEN": "\033[0;32m", "YELLOW": "\033[1;33m",
         "CYAN": "\033[0;36m", "BLUE": "\033[0;34m", "MAGENTA": "\033[0;35m",
-        "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[1;37m",
-        "TEXT": "\033[0;37m", "NC": "\033[0m",
+        "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[1;37m", "NC": "\033[0m",
     }
 
 C = _detect_colors()
 RED = C["RED"]; GREEN = C["GREEN"]; YELLOW = C["YELLOW"]; CYAN = C["CYAN"]
 BLUE = C["BLUE"]; MAGENTA = C["MAGENTA"]; BOLD = C["BOLD"]; DIM = C["DIM"]
 WHITE = C["WHITE"]; NC = C["NC"]
-TEXT = C["TEXT"]
 
 TERM_WIDTH = shutil.get_terminal_size().columns
 PANEL_W = min(TERM_WIDTH - 4, 78)
-INDENT = " " * max(2, (TERM_WIDTH - PANEL_W - 2) // 2)
+INDENT = "  "
 
 
 def _strip(s: str) -> str:
@@ -60,25 +57,18 @@ def _char_width(char: str) -> int:
     code = ord(char)
     if code == 0xfe0f:
         return 0
-    # Problematic characters that render as 1-cell in typical terminal fonts
-    if code in {
-        0x1f7e2, # 🟢
-        0x1f534, # 🔴
-        0x1f310, # 🌐
-        0x1f512, # 🔒
-        0x1f6e1, # 🛡
-        0x2699,  # ⚙
-    }:
-        return 1
     # Common 2-cell emojis in standard BMP
     if code in {
         0x274c,  # ❌
         0x2705,  # ✅
         0x26a1,  # ⚡
-        0x23f1,  # ⏱
         0x1f4ca, # 📊
+        0x1f310, # 🌐
     }:
         return 2
+    # Special cases: emojis that are rendered as 1 cell wide in standard monospace fonts/terminals
+    if code in (0x1f6e1, 0x1f6e0):  # 🛡 and 🛠
+        return 1
     # Emojis > 0xffff are always 2 cells wide
     if code > 0xffff:
         return 2
@@ -146,15 +136,15 @@ def _fit_line(line: str, max_w: int) -> tuple[str, int]:
 # ═════════════════════════════════════════════════════════════════════════════
 
 BANNER = rf"""
-{CYAN}██╗  ██╗{GREEN}██╗   ██╗{CYAN}██████╗ {GREEN}██████╗ {CYAN} █████╗
- ██║  ██║{GREEN}╚██╗ ██╔╝{CYAN}██╔══██╗{GREEN}██╔══██╗{CYAN}██╔══██╗
- ███████║{GREEN} ╚████╔╝ {CYAN}██║  ██║{GREEN}██████╔╝{CYAN}███████║
- ██╔══██║{GREEN}  ╚██╔╝  {CYAN}██║  ██║{GREEN}██╔══██╗{CYAN}██╔══██║
- ██║  ██║{GREEN}   ██║   {CYAN}██████╔╝{GREEN}██║  ██║{CYAN}██║  ██║
- ╚═╝  ╚═╝{GREEN}   ╚═╝   {CYAN}╚═════╝ {GREEN}╚═╝  ╚═╝{CYAN}╚═╝  ╚═╝{NC}
-{DIM}─────────────────────────────────────────────────{NC}
-{MAGENTA}🐍  Multi-Protocol Proxy & Routing Orchestrator  🐍{NC}
-{DIM}v2.4.0{NC}
+{CYAN}        ██╗  ██╗{GREEN}██╗   ██╗{CYAN}██████╗ {GREEN}██████╗ {CYAN} █████╗
+         ██║  ██║{GREEN}╚██╗ ██╔╝{CYAN}██╔══██╗{GREEN}██╔══██╗{CYAN}██╔══██╗
+         ███████║{GREEN} ╚████╔╝ {CYAN}██║  ██║{GREEN}██████╔╝{CYAN}███████║
+         ██╔══██║{GREEN}  ╚██╔╝  {CYAN}██║  ██║{GREEN}██╔══██╗{CYAN}██╔══██║
+         ██║  ██║{GREEN}   ██║   {CYAN}██████╔╝{GREEN}██║  ██║{CYAN}██║  ██║
+         ╚═╝  ╚═╝{GREEN}   ╚═╝   {CYAN}╚═════╝ {GREEN}╚═╝  ╚═╝{CYAN}╚═╝  ╚═╝{NC}
+{DIM}        ─────────────────────────────────────────────────{NC}
+{MAGENTA}              🐉  Multi-Protocol Proxy Manager{NC}
+{DIM}                        v2.4.0{NC}
 """
 
 
@@ -178,7 +168,7 @@ def title(text: str):
 
 def kv(label: str, value: str, label_w: int = 16) -> str:
     """Строка «ключ — значение» для панелей."""
-    return f"  {TEXT}{label:<{label_w}}{NC} {value}"
+    return f"  {DIM}{label:<{label_w}}{NC} {value}"
 
 
 def panel(title_text: str, lines: list[str]):
@@ -340,91 +330,6 @@ def menu(options: list[tuple[str, str, str]], header: str = "") -> str:
         "Т": "T",
         "Х": "X",
         "У": "Y",
-    }
-    return cyrillic_map.get(choice, choice)
-
-
-def dashboard_menu(
-    sections: list[tuple[str, list[str]]],
-    options: list[tuple[str, str, str]],
-    header: str = "",
-    banner: str = "",
-    options_header: str = "",
-) -> str:
-    """Рисует составной главный экран с единой рамкой и секциями."""
-    inner = PANEL_W
-    print()
-    print(f"{INDENT}{CYAN}╔{'═' * inner}╗{NC}")
-
-    def section_divider() -> None:
-        print(f"{INDENT}{CYAN}║{NC}{DIM}{'─' * inner}{NC}{CYAN}║{NC}")
-
-    if banner:
-        import textwrap
-        banner = textwrap.dedent(banner)
-        print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
-        for raw_line in banner.splitlines():
-            if not raw_line.strip():
-                print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
-                continue
-            line_fit, line_w = _fit_line(raw_line, inner - 2)
-            left = max(0, (inner - line_w) // 2)
-            right = max(0, inner - line_w - left)
-            print(f"{INDENT}{CYAN}║{NC}{' ' * left}{line_fit}{' ' * right}{CYAN}║{NC}")
-        print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
-        section_divider()
-
-    if header:
-        h_fit, h_w = _fit_line(header, inner - 2)
-        pad_left = (inner - h_w) // 2
-        pad_right = inner - h_w - pad_left
-        print(f"{INDENT}{CYAN}║{NC}{' ' * pad_left}{BOLD}{WHITE}{h_fit}{NC}{' ' * pad_right}{CYAN}║{NC}")
-        section_divider()
-
-    for section_title, lines in sections:
-        title_fit, title_w = _fit_line(section_title, inner - 4)
-        print(f"{INDENT}{CYAN}║{NC} {BOLD}{CYAN}{title_fit}{NC}{' ' * (inner - 2 - title_w)} {CYAN}║{NC}")
-        print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
-        for line in lines:
-            line_fit, line_w = _fit_line(line, inner - 2)
-            print(f"{INDENT}{CYAN}║{NC} {line_fit}{' ' * (inner - 2 - line_w)} {CYAN}║{NC}")
-        print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
-        section_divider()
-
-    if options_header:
-        title_fit, title_w = _fit_line(options_header, inner - 4)
-        print(f"{INDENT}{CYAN}║{NC} {BOLD}{CYAN}{title_fit}{NC}{' ' * (inner - 2 - title_w)} {CYAN}║{NC}")
-        print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
-
-    for key, label, desc in options:
-        if key == "-":
-            section_divider()
-            continue
-        line = f"  {_menu_key(key)}  {TEXT}{label}{NC}"
-        line_fit, line_w = _fit_line(line, inner - 2)
-        print(f"{INDENT}{CYAN}║{NC} {line_fit}{' ' * (inner - 2 - line_w)} {CYAN}║{NC}")
-        if desc:
-            import textwrap
-            for paragraph in desc.split("\n"):
-                for wrapped in textwrap.wrap(paragraph, width=max(20, inner - 9)) or [""]:
-                    dline = f"       {TEXT}{DIM}{wrapped}{NC}"
-                    dline_fit, dline_w = _fit_line(dline, inner - 2)
-                    print(f"{INDENT}{CYAN}║{NC} {dline_fit}{' ' * (inner - 2 - dline_w)} {CYAN}║{NC}")
-
-    print(f"{INDENT}{CYAN}╚{'═' * inner}╝{NC}")
-    print()
-    keys = [k for k, _, _ in options if k not in ("-", "")]
-    hint = "0" if "0" in keys else keys[-1] if keys else "0"
-    try:
-        choice = input(f"{INDENT}{CYAN}▸{NC} {BOLD}Выбор{NC}{DIM} ({hint}):{NC} ").strip()
-    except (KeyboardInterrupt, EOFError):
-        return "0"
-    if not choice:
-        return hint
-    choice = choice.upper()
-    cyrillic_map = {
-        "А": "A", "В": "B", "Б": "B", "С": "C", "Е": "E", "Н": "H",
-        "К": "K", "М": "M", "О": "O", "Р": "P", "Т": "T", "Х": "X", "У": "Y",
     }
     return cyrillic_map.get(choice, choice)
 
