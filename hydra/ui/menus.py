@@ -16,6 +16,7 @@ import sys
 import uuid as _uuid
 import math
 import re
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -51,6 +52,21 @@ from hydra.ui.tui import (
 from hydra.ui.protocol_ui import (
     protocol_label, protocol_menu_title, protocol_status_panel, status_badge,
 )
+
+
+HYDRA_SAYINGS = (
+    "Одна голова хорошо, а десять — лучше.",
+    "Сначала проверь конфигурацию — потом перезапускай.",
+    "Семь раз проверь конфиг — один раз примени.",
+    "Логи не спорят с реальностью.",
+    "Каждому потоку — свой маршрут.",
+    "Стабильный туннель — незаметный туннель.",
+    "Сначала резервная копия, потом магия.",
+    "Не всё то offline, что не отвечает на ping.",
+    "Если сервис молчит — проверь журнал.",
+    "Конфигурация применена. Паника отменяется.",
+)
+HYDRA_SAYING = random.choice(HYDRA_SAYINGS)
 
 
 
@@ -485,21 +501,22 @@ def main_menu(state: AppState):
             kv("Пользователи:", f"{GREEN if u_active else YELLOW}{u_active}{NC} из {len(state.users)}"),
         ]
         lines += _sys_info(state)
-        panel("Состояние", lines)
+        panel("Состояние узла", lines)
+        panel("ГИДРА СОВЕТУЕТ", [f"💬 {HYDRA_SAYING}"])
 
         choice = menu(
             [
-                ("1", "📦 Ядро и система",       "Установка Sing-Box, зависимости, применить конфиг"),
-                ("2", "🧩 Протоколы",           f"Транспорты (Naive, AmneziaWG, Mieru...)  [{active_t}/{total_t}]"),
+                ("1", "⚙️  Ядро и система",      "Установка Sing-Box, зависимости, применить конфиг"),
+                ("2", "🐍 Протоколы",           f"Транспорты (Naive, AmneziaWG, Mieru...)  [{active_t}/{total_t}]"),
                 ("3", "👥 Пользователи",        f"Создание, лимиты, TTL, подписки  [{u_active} активно]"),
                 ("4", "🤖 Telegram-боты",       "Admin-панель и клиентский бот"),
                 ("5", "📊 Мониторинг",          "Трафик, статус, sync-агент, логи"),
-                ("6", "🔒 Безопасность",        f"Fail2ban, Honeypot, IPBan  [{active_s}/{total_s}]"),
+                ("6", "🛡️  Безопасность",       f"Fail2ban, Honeypot, IPBan  [{active_s}/{total_s}]"),
                 ("7", "🌐 Сетевые службы",      f"DNSCrypt, WARP (DNS и маршрутизация)  [{active_e}/{total_e}]"),
-                ("8", "🛠️  Тестирование и отладка", "Проверка скорости, блокировок, GeoIP и CPU"),
+                ("8", "🧪  Тестирование и отладка", "Проверка скорости, блокировок, GeoIP и CPU"),
                 ("0", "🚪 Выход", ""),
             ],
-            "HYDRA MULTI-PROXY MANAGER",
+            "HYDRA · УПРАВЛЕНИЕ",
         )
 
         if choice == "0":

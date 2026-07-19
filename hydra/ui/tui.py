@@ -136,14 +136,14 @@ def _fit_line(line: str, max_w: int) -> tuple[str, int]:
 # ═════════════════════════════════════════════════════════════════════════════
 
 BANNER = rf"""
-{CYAN}        ██╗  ██╗{GREEN}██╗   ██╗{CYAN}██████╗ {GREEN}██████╗ {CYAN} █████╗
+{CYAN}        🐍  ██╗  ██╗{GREEN}██╗   ██╗{CYAN}██████╗ {GREEN}██████╗ {CYAN} █████╗  🐍
          ██║  ██║{GREEN}╚██╗ ██╔╝{CYAN}██╔══██╗{GREEN}██╔══██╗{CYAN}██╔══██╗
          ███████║{GREEN} ╚████╔╝ {CYAN}██║  ██║{GREEN}██████╔╝{CYAN}███████║
          ██╔══██║{GREEN}  ╚██╔╝  {CYAN}██║  ██║{GREEN}██╔══██╗{CYAN}██╔══██║
          ██║  ██║{GREEN}   ██║   {CYAN}██████╔╝{GREEN}██║  ██║{CYAN}██║  ██║
          ╚═╝  ╚═╝{GREEN}   ╚═╝   {CYAN}╚═════╝ {GREEN}╚═╝  ╚═╝{CYAN}╚═╝  ╚═╝{NC}
 {DIM}        ─────────────────────────────────────────────────{NC}
-{MAGENTA}              🐉  Multi-Protocol Proxy Manager{NC}
+{MAGENTA}       🐍  Multi-Protocol Proxy & Routing Orchestrator  🐍{NC}
 {DIM}                        v2.4.0{NC}
 """
 
