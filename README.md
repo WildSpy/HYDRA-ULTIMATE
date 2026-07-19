@@ -462,6 +462,12 @@ journalctl -u sing-box -n 20 --no-pager
 
 ---
 
+## 🔗 Связанные проекты
+
+- [VLESS Ultimate](https://github.com/inferno1978/VLESS-Ultimate-Installer) — Xray-core (VLESS/Reality, XHTTP) как альтернатива ядру sing-box, используемому в HYDRA-ULTIMATE.
+
+---
+
 ## ⚖️ Лицензия
 
 Исходный код проекта распространяется на условиях лицензии **GNU General Public License v3.0 (GPL-3.0)**. Полный текст лицензии доступен в файле [LICENSE](LICENSE).
