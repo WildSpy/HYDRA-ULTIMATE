@@ -11,7 +11,9 @@ from hydra.core.state import AppState
 def test_parse_version():
     assert parse_version("1.18.0-extended") == (1, 18, 0)
     assert parse_version("v1.19.1") == (1, 19, 1)
-    assert parse_version("1.19.0-extended-b8") == (1, 19, 0)
+    assert parse_version("1.19.0-extended-b8") == (1, 19, 0, 8)
+    assert parse_version("1.13.14-extended-2.5.0") == (1, 13, 14, 2, 5, 0)
+    assert parse_version("v1.13.14-extended-2.5.2") == (1, 13, 14, 2, 5, 2)
     assert parse_version(None) == (0,)
     assert parse_version("invalid") == (0,)
 

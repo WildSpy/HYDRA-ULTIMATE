@@ -416,10 +416,10 @@ def parse_version(v_str: Optional[str]) -> tuple[int, ...]:
     if not v_str:
         return (0,)
     import re
-    match = re.search(r'(\d+(?:\.\d+)+)', v_str)
-    if match:
+    parts = re.findall(r'\d+', v_str)
+    if parts:
         try:
-            return tuple(map(int, match.group(1).split('.')))
+            return tuple(map(int, parts))
         except ValueError:
             pass
     return (0,)
