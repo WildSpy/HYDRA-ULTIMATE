@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
+import shutil
 import subprocess
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from hydra.core.state import AppState, User, save_state, get_protocol, find_user
 from hydra.core import singbox, nft
@@ -10,9 +16,95 @@ from hydra.plugins import registry
 
 
 TRAFFIC_DAEMON_SERVICE = Path("/etc/systemd/system/hydra-traffic-daemon.service")
+APPLY_JOURNAL = Path("/var/log/hydra/apply.jsonl")
+APPLY_LOCK_FILE = Path(os.environ.get("HYDRA_APPLY_LOCK_FILE", "/run/lock/hydra-apply.lock"))
+_last_apply_error = ""
+_apply_lock = threading.Lock()
+
+
+def last_apply_error() -> str:
+    return _last_apply_error
+
+
+def _set_apply_error(message: str) -> None:
+    global _last_apply_error
+    _last_apply_error = message
+
+
+@contextmanager
+def _process_apply_guard():
+    """Acquire an inter-process apply lock in addition to the thread lock."""
+    if os.name == "nt" or getattr(os, "geteuid", lambda: 1)() != 0:
+        yield True
+        return
+    try:
+        import fcntl
+        APPLY_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with APPLY_LOCK_FILE.open("a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                handle.seek(0)
+                handle.truncate()
+                handle.write(str(os.getpid()))
+                handle.flush()
+                yield True
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except (BlockingIOError, OSError):
+        yield False
+
+
+def _journal(event: str, **fields) -> None:
+    """Append a compact apply event without making logging a failure source."""
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **fields,
+    }
+    try:
+        APPLY_JOURNAL.parent.mkdir(parents=True, exist_ok=True)
+        with APPLY_JOURNAL.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if hasattr(APPLY_JOURNAL, "chmod"):
+            APPLY_JOURNAL.chmod(0o600)
+    except OSError:
+        pass
 
 
 def apply_config(state: AppState) -> bool:
+    """Apply one configuration transaction at a time."""
+    if not _apply_lock.acquire(blocking=False):
+        _set_apply_error("Применение конфигурации уже выполняется")
+        _journal("rejected", reason="already_running")
+        return False
+    try:
+        with _process_apply_guard() as acquired:
+            if not acquired:
+                _set_apply_error("Применение конфигурации уже выполняется в другом процессе")
+                _journal("rejected", reason="already_running_process")
+                return False
+            state_snapshot = copy.deepcopy(state)
+            try:
+                applied = _apply_config_unlocked(state)
+            except Exception as exc:
+                _set_apply_error(f"Неожиданная ошибка применения: {exc}")
+                singbox._log("ERROR", last_apply_error())
+                _journal("failed", stage="unexpected", error=last_apply_error())
+                applied = False
+            if not applied:
+                _restore_state(state, state_snapshot)
+                try:
+                    save_state(state)
+                except Exception as exc:
+                    singbox._log("ERROR", f"Не удалось восстановить состояние после сбоя: {exc}")
+            return applied
+    finally:
+        _apply_lock.release()
+
+
+def _apply_config_unlocked(state: AppState) -> bool:
+    _set_apply_error("")
+    _journal("started")
     # Принудительно включаем TPROXY — необходим для AWG и других транспортов
     if not state.network.tproxy_enabled:
         state.network.tproxy_enabled = True
@@ -20,8 +112,11 @@ def apply_config(state: AppState) -> bool:
 
     try:
         fragments = registry.collect_fragments(state)
+        _journal("fragments_collected", plugins=list(fragments))
     except Exception as exc:
+        _set_apply_error(str(exc))
         singbox._log("ERROR", str(exc))
+        _journal("failed", stage="collect_fragments", error=str(exc))
         return False
     cfg = singbox.generate_config(state, fragments)
     previous_config = None
@@ -31,12 +126,20 @@ def apply_config(state: AppState) -> bool:
         except OSError:
             previous_config = None
     if not singbox.write_config(cfg):
+        _set_apply_error(singbox.last_error() or "Не удалось записать конфигурацию Sing-Box")
+        _journal("failed", stage="singbox_config", error=last_apply_error())
         return False
+    nft_snapshot = nft.snapshot_tproxy()
     try:
         nft.apply_tproxy(fragments, state.network.tproxy_port)
+        _journal("nft_applied")
     except Exception as exc:
-        singbox._log("ERROR", f"Failed to apply plugin/network configuration: {exc}")
+        message = f"Не удалось применить сетевую конфигурацию: {exc}"
+        _set_apply_error(message)
+        singbox._log("ERROR", message)
         _restore_singbox_config(previous_config)
+        _restore_nft_snapshot(nft_snapshot)
+        _journal("rolled_back", stage="nft", error=message)
         return False
 
     from hydra.core.sni_router import needs_mux, stop as stop_mux, rebuild as rebuild_mux, uninstall_haproxy
@@ -59,10 +162,15 @@ def apply_config(state: AppState) -> bool:
             time.sleep(0.3)
 
     try:
-        registry.apply_enabled(state)
+        applied_plugins = registry.apply_enabled(state)
+        _journal("plugins_applied", plugins=[p.meta.name for p in registry.enabled(state)])
     except Exception as exc:
-        singbox._log("ERROR", f"Failed to apply plugin configuration: {exc}")
+        message = f"Не удалось применить конфигурацию плагина: {exc}"
+        _set_apply_error(message)
+        singbox._log("ERROR", message)
         _restore_singbox_config(previous_config)
+        _restore_nft_snapshot(nft_snapshot)
+        _journal("rolled_back", stage="plugins", error=message)
         return False
 
     res = singbox.reload()
@@ -80,17 +188,66 @@ def apply_config(state: AppState) -> bool:
     # Управляем traffic daemon
     try:
         _manage_traffic_daemon(state)
-    except Exception:
-        pass
+    except Exception as exc:
+        message = f"Не удалось применить сервис учёта трафика: {exc}"
+        _set_apply_error(message)
+        singbox._log("ERROR", message)
+        _restore_singbox_config(previous_config)
+        _restore_nft_snapshot(nft_snapshot)
+        _rollback_applied_plugins(state, applied_plugins)
+        _journal("rolled_back", stage="traffic_daemon", error=message)
+        try:
+            singbox.reload()
+        except Exception as reload_exc:
+            singbox._log("ERROR", f"Failed to reload restored sing-box config: {reload_exc}")
+        return False
+
+    plugin_health = registry.health_all(state)
+    if plugin_health:
+        details = "; ".join(f"{name}: {reason}" for name, reason in plugin_health.items())
+        _set_apply_error(f"Проверка сервисов не пройдена: {details}")
+        singbox._log("ERROR", last_apply_error())
+        _restore_singbox_config(previous_config)
+        _restore_nft_snapshot(nft_snapshot)
+        _rollback_applied_plugins(state, applied_plugins)
+        _journal("rolled_back", stage="plugin_health", error=last_apply_error())
+        try:
+            singbox.reload()
+        except Exception as exc:
+            singbox._log("ERROR", f"Не удалось перезагрузить восстановленный Sing-Box: {exc}")
+        return False
 
     if not res or not mux_ok:
+        if not res:
+            _set_apply_error(singbox.last_error() or "Sing-Box не запустился после применения")
+        else:
+            _set_apply_error("SNI-маршрутизатор не запустился после применения")
         _restore_singbox_config(previous_config)
+        _restore_nft_snapshot(nft_snapshot)
+        _rollback_applied_plugins(state, applied_plugins)
+        _journal("rolled_back", stage="healthcheck", error=last_apply_error())
         try:
             singbox.reload()
         except Exception as exc:
             singbox._log("ERROR", f"Failed to reload restored sing-box config: {exc}")
         return False
+    _journal("committed")
     return True
+
+
+def _restore_nft_snapshot(snapshot: nft.TproxySnapshot) -> None:
+    try:
+        nft.restore_tproxy(snapshot)
+    except Exception as exc:
+        singbox._log("ERROR", f"Не удалось восстановить правила nftables HYDRA: {exc}")
+
+
+def _rollback_applied_plugins(state: AppState, applied: list[tuple[object, object]]) -> None:
+    for plugin, snapshot in reversed(applied):
+        try:
+            plugin.rollback(state, snapshot)
+        except Exception as exc:
+            singbox._log("ERROR", f"Rollback плагина {plugin.meta.name} не выполнен: {exc}")
 
 
 def _restore_singbox_config(previous: bytes | None) -> None:
@@ -161,7 +318,26 @@ def _maybe_migrate_haproxy(state: AppState) -> None:
 def _manage_traffic_daemon(state: AppState) -> None:
     service_file = TRAFFIC_DAEMON_SERVICE
     enabled = getattr(state.network, "clash_api_enabled", False)
-    
+
+    if not enabled and not service_file.exists():
+        return
+    if os.name != "nt" and shutil.which("systemctl") is None:
+        raise RuntimeError("systemctl is unavailable")
+
+    def systemctl(*args: str, allow_inactive: bool = False) -> subprocess.CompletedProcess:
+        try:
+            result = subprocess.run(
+                ["systemctl", *args], capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"systemctl {' '.join(args)} failed: {exc}") from exc
+        if result.returncode != 0 and not allow_inactive:
+            raise RuntimeError(
+                f"systemctl {' '.join(args)} failed: "
+                f"{(result.stderr or result.stdout or 'unknown error').strip()}"
+            )
+        return result
+
     if enabled:
         import hashlib
 
@@ -189,32 +365,27 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 """
-        try:
-            unit_changed = not service_file.exists() or service_file.read_text() != unit
-            if unit_changed:
-                service_file.write_text(unit)
-                subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
-            subprocess.run(["systemctl", "enable", "hydra-traffic-daemon"], capture_output=True)
-            active = subprocess.run(
-                ["systemctl", "is-active", "--quiet", "hydra-traffic-daemon"],
-                capture_output=True,
-            ).returncode == 0
-            if unit_changed:
-                # A changed executable environment must be picked up once.
-                subprocess.run(["systemctl", "restart", "hydra-traffic-daemon"], capture_output=True)
-            elif not active:
-                subprocess.run(["systemctl", "start", "hydra-traffic-daemon"], capture_output=True)
-        except Exception:
-            pass
+        unit_changed = not service_file.exists() or service_file.read_text(encoding="utf-8") != unit
+        if unit_changed:
+            service_file.parent.mkdir(parents=True, exist_ok=True)
+            pending = service_file.with_suffix(".service.pending")
+            pending.write_text(unit, encoding="utf-8")
+            pending.chmod(0o644)
+            pending.replace(service_file)
+            systemctl("daemon-reload")
+        systemctl("enable", "hydra-traffic-daemon")
+        active = systemctl(
+            "is-active", "--quiet", "hydra-traffic-daemon", allow_inactive=True,
+        ).returncode == 0
+        if unit_changed:
+            systemctl("restart", "hydra-traffic-daemon")
+        elif not active:
+            systemctl("start", "hydra-traffic-daemon")
     else:
-        try:
-            subprocess.run(["systemctl", "stop", "hydra-traffic-daemon"], capture_output=True)
-            subprocess.run(["systemctl", "disable", "hydra-traffic-daemon"], capture_output=True)
-            if service_file.exists():
-                service_file.unlink()
-                subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
-        except Exception:
-            pass
+        systemctl("stop", "hydra-traffic-daemon", allow_inactive=True)
+        systemctl("disable", "hydra-traffic-daemon", allow_inactive=True)
+        service_file.unlink(missing_ok=True)
+        systemctl("daemon-reload")
 
 
 def reconcile_traffic_daemon(state: AppState) -> None:

@@ -71,3 +71,71 @@ def test_failed_warp_apply_is_queued_for_retry():
         sync_agent.run_sync()
 
     assert state.install["sync_config_pending"] is True
+
+
+def test_pending_config_is_retried_when_limit_checks_are_disabled():
+    state = AppState()
+    state.install["sync_limits_enabled"] = False
+    state.install["sync_warp_enabled"] = False
+    state.install["sync_updates_enabled"] = False
+    state.install["sync_config_pending"] = True
+
+    with patch("hydra.core.state.load_state", return_value=state), \
+         patch.object(sync_agent, "update_state", side_effect=_state_updater(state)), \
+         patch.object(sync_agent, "check_traffic_limits") as check_limits, \
+         patch.object(sync_agent, "_log"), \
+         patch("hydra.core.orchestrator.apply_config", return_value=True) as apply:
+        ok, _ = sync_agent.run_sync()
+
+    assert ok is True
+    assert "sync_config_pending" not in state.install
+    check_limits.assert_not_called()
+    apply.assert_called_once_with(state)
+
+
+def test_manual_full_check_ignores_automatic_check_toggles():
+    state = AppState()
+    state.install.update({
+        "sync_limits_enabled": False,
+        "sync_warp_enabled": False,
+        "sync_updates_enabled": False,
+    })
+    warp_status = MagicMock(enabled=True)
+    cache = MagicMock()
+    cache.exists.return_value = True
+    cache.read_text.return_value = '{"updated_at": "2099-01-01T00:00:00"}'
+
+    with patch("hydra.core.state.load_state", return_value=state), \
+         patch.object(sync_agent, "update_state", side_effect=_state_updater(state)), \
+         patch.object(sync_agent, "check_traffic_limits", return_value=[]) as check_limits, \
+         patch.object(sync_agent, "get_enabled", return_value=[]), \
+         patch.object(sync_agent, "_log"), \
+         patch.object(sync_agent, "Path", return_value=cache), \
+         patch("hydra.plugins.warp.plugin.WarpPlugin.status", return_value=warp_status) as warp_check, \
+         patch("hydra.plugins.warp.plugin.WarpPlugin.update_external_rules", return_value=(True, "ok")) as warp_update, \
+         patch("hydra.core.orchestrator.apply_config", return_value=True), \
+         patch("hydra.utils.downloader.latest_release", return_value="v1.13.11-extended-2.1.0") as latest, \
+         patch("hydra.core.singbox.get_version", return_value="1.13.11-extended-2.1.0"):
+        ok, _ = sync_agent.run_sync(force_all_checks=True, force_update_check=True)
+
+    assert ok is True
+    check_limits.assert_called_once_with(state)
+    warp_check.assert_called_once()
+    warp_update.assert_called_once()
+    latest.assert_called_once()
+
+
+def test_manual_run_reports_update_check_failure():
+    state = AppState()
+    state.install["sync_warp_enabled"] = False
+
+    with patch("hydra.core.state.load_state", return_value=state), \
+         patch.object(sync_agent, "update_state", side_effect=_state_updater(state)), \
+         patch.object(sync_agent, "check_traffic_limits", return_value=[]), \
+         patch.object(sync_agent, "get_enabled", return_value=[]), \
+         patch.object(sync_agent, "_log"), \
+         patch("hydra.utils.downloader.latest_release", return_value="unknown"):
+        ok, message = sync_agent.run_sync(force_update_check=True)
+
+    assert ok is False
+    assert "Sing-Box" in message

@@ -10,6 +10,7 @@ import re
 import sys
 import shutil
 from typing import Optional
+from hydra import __version__
 
 try:
     import readline
@@ -144,7 +145,7 @@ BANNER = rf"""
          ╚═╝  ╚═╝{GREEN}   ╚═╝   {CYAN}╚═════╝ {GREEN}╚═╝  ╚═╝{CYAN}╚═╝  ╚═╝{NC}
 {DIM}        ─────────────────────────────────────────────────{NC}
 {MAGENTA}              🐉  Multi-Protocol Proxy Manager{NC}
-{DIM}                        v2.4.0{NC}
+{DIM}                        v{__version__}{NC}
 """
 
 

@@ -12,6 +12,7 @@ import urllib.error
 from pathlib import Path
 
 from hydra.core.state import AppState, load_state, update_state
+from hydra.utils.commands import redact_text
 
 
 TRAFFIC_LOG = Path("/var/log/hydra/traffic-daemon.log")
@@ -87,7 +88,7 @@ def _write_log(message: str) -> None:
         maintain_traffic_log()
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with TRAFFIC_LOG.open("a", encoding="utf-8") as handle:
-            handle.write(f"[{timestamp}] {message}\n")
+            handle.write(f"[{timestamp}] {redact_text(message)}\n")
     except OSError:
         pass
 

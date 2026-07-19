@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hydra.core.state import (
-    AppState, User, save_state, load_state, update_state, find_user, get_protocol,
+    AppState, User, PluginState, save_state, load_state, update_state, find_user, get_protocol,
 )
 from hydra.core.singbox import (
     install as install_singbox,
@@ -51,6 +51,11 @@ from hydra.ui.tui import (
 from hydra.ui.protocol_ui import (
     protocol_label, protocol_menu_title, protocol_status_panel, status_badge,
 )
+
+
+def _apply_error_text(default: str = "Ошибка применения конфигурации") -> str:
+    """Prefer the concrete error reported by the orchestrator."""
+    return orchestrator.last_apply_error() or default
 
 
 
@@ -530,31 +535,45 @@ def main_menu(state: AppState):
 
 def menu_core(state: AppState):
     while True:
+        state = load_state()
         clear()
         ok_i = singbox_installed()
         ok_r = is_running()
         ver = singbox_version()
 
+        update_available = state.install.get("singbox_update_available", False)
+        latest_version = state.install.get("singbox_latest_version", "")
+
+        ver_text = ver or "—"
+        if ok_i and update_available:
+            ver_text += f" {YELLOW}(Доступно обновление){NC}"
+
         panel("Sing-Box", [
             kv("Статус:", f"{_ok(ok_r)} {'запущен' if ok_r else 'остановлен'}"),
-            kv("Версия:", ver or "—"),
+            kv("Версия:", ver_text),
             kv("Конфиг:", f"{DIM}/etc/sing-box/config.json{NC}"),
             kv("Лог:", f"{DIM}journalctl -u sing-box{NC}"),
         ])
 
-        choice = menu(
-            [
-                ("1", "📦 Установить Sing-Box Extended" if not ok_i else "🔄 Переустановить",
-                 "shtorm-7/sing-box-extended"),
-                ("2", "▶️  Запустить" if not ok_r else "⏸️  Остановить", ""),
-                ("3", "🔄 Применить конфиг",
-                 "Собрать /etc/sing-box/config.json и перезагрузить"),
-                ("4", "🚀 Оптимизировать сеть", "BBR/FQ, TCP/UDP-буферы и очереди в один клик"),
-                ("5", "↩️  Откатить оптимизацию сети", "Восстановить параметры до первого применения"),
-                ("0", "↩ Назад", ""),
-            ],
-            "ЯДРО И СИСТЕМА",
-        )
+        menu_items = [
+            ("1", "📦 Установить Sing-Box Extended" if not ok_i else "🔄 Переустановить",
+             "shtorm-7/sing-box-extended"),
+            ("2", "▶️  Запустить" if not ok_r else "⏸️  Остановить", ""),
+            ("3", "🔄 Применить конфиг",
+             "Собрать /etc/sing-box/config.json и перезагрузить"),
+            ("4", "🚀 Оптимизировать сеть", "BBR/FQ, TCP/UDP-буферы и очереди в один клик"),
+            ("5", "↩️  Откатить оптимизацию сети", "Восстановить параметры до первого применения"),
+        ]
+
+        if ok_i:
+            if update_available:
+                menu_items.append(("6", "🆙 Установить обновление", f"Доступна версия sing-box-extended {latest_version}"))
+            else:
+                menu_items.append(("X", "🆙 Установить обновления", "Установлена последняя версия sing-box-extended"))
+
+        menu_items.append(("0", "↩ Назад", ""))
+
+        choice = menu(menu_items, "ЯДРО И СИСТЕМА")
 
         if choice == "0":
             return
@@ -565,10 +584,25 @@ def menu_core(state: AppState):
                 if orchestrator.apply_config(state):
                     success("Конфигурация пересобрана и применена")
                 else:
-                    warn("Внимание: не удалось автоматически применить конфиг")
+                    warn(_apply_error_text("Не удалось автоматически применить конфигурацию"))
             else:
                 error("Не удалось установить")
             prompt("Нажмите Enter")
+        elif choice == "6" and ok_i and update_available:
+            info("Устанавливаю обновление Sing-Box...")
+            from hydra.core.singbox import update_kernel
+            ok, msg = update_kernel()
+            if ok:
+                success(msg)
+                if orchestrator.apply_config(state):
+                    success("Конфигурация пересобрана и применена")
+                else:
+                    warn(_apply_error_text("Не удалось автоматически применить конфигурацию"))
+            else:
+                error(msg)
+            prompt("Нажмите Enter")
+        elif choice == "X" and ok_i and not update_available:
+            continue
         elif choice == "2":
             if ok_r:
                 from hydra.core.singbox import stop
@@ -585,7 +619,7 @@ def menu_core(state: AppState):
             if orchestrator.apply_config(state):
                 success("Конфиг применён, Sing-Box перезагружен")
             else:
-                error("Ошибка применения конфига")
+                error(_apply_error_text("Ошибка применения конфигурации"))
             prompt("Нажмите Enter")
         elif choice == "4":
             _apply_network_tuning_menu()
@@ -852,7 +886,7 @@ def menu_plugin(state: AppState, p):
                         if orchestrator.enable(state, p.meta.name):
                             success("Протокол включён и применён")
                         else:
-                            error("Ошибка применения конфигурации")
+                            error(_apply_error_text())
                     except Exception as e:
                         error(f"Ошибка активации протокола: {e}")
                 else:
@@ -861,13 +895,13 @@ def menu_plugin(state: AppState, p):
                 if orchestrator.disable(state, p.meta.name):
                     success("Протокол выключен")
                 else:
-                    error("Ошибка применения конфигурации")
+                    error(_apply_error_text())
             else:
                 try:
                     if orchestrator.enable(state, p.meta.name):
                         success("Протокол включён")
                     else:
-                        error("Ошибка применения конфигурации")
+                        error(_apply_error_text())
                 except Exception as e:
                     error(f"Ошибка активации протокола: {e}")
             prompt("Нажмите Enter")
@@ -1693,8 +1727,8 @@ def _add_user(state: AppState):
     email = prompt("Email пользователя").strip().lower()
     if not email:
         return
-    if not re.fullmatch(r"[^\s@]+@[^\s@]+", email):
-        error("Введите корректный email без пробелов.")
+    if not re.fullmatch(r"\S+", email):
+        error("Введите имя пользователя или email без пробелов.")
         prompt("Нажмите Enter")
         return
     
@@ -2688,35 +2722,72 @@ def _watch_journal(title_text: str, unit: str):
                 process.kill()
 
 
+def _sync_agent_log_snapshot(
+    log_path: Path,
+    now_timestamp: float | None = None,
+) -> tuple[str, str, bool]:
+    """Return the latest non-empty log line and its freshness."""
+    lines, message = _read_log_source("file", str(log_path), 5)
+    last_line = next((line for line in reversed(lines) if line.strip()), "")
+    if not last_line:
+        return message or "нет логов", "нет данных", True
+
+    try:
+        current = datetime.now().timestamp() if now_timestamp is None else now_timestamp
+        age_seconds = max(0, int(current - log_path.stat().st_mtime))
+    except OSError:
+        return last_line, "время неизвестно", True
+
+    if age_seconds < 60:
+        freshness = "только что"
+    elif age_seconds < 3600:
+        freshness = f"{age_seconds // 60} мин назад"
+    elif age_seconds < 86400:
+        freshness = f"{age_seconds // 3600} ч назад"
+    else:
+        freshness = f"{age_seconds // 86400} дн назад"
+    # The timer runs every five minutes; after two missed intervals the status
+    # should visibly indicate that the displayed record is no longer current.
+    return last_line, freshness, age_seconds > 600
+
+
 def _menu_sync_agent(state: AppState):
     while True:
+        state = load_state()
         clear()
         
         timer_active = _unit_active("hydra-sync-agent.timer")
             
         log_path = Path("/var/log/hydra/sync-agent.log")
-        last_log_line = "нет логов"
-        if log_path.exists():
-            try:
-                lines = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-                if lines:
-                    last_log_line = lines[-1]
-            except Exception:
-                pass
+        last_log_line, log_freshness, log_stale = _sync_agent_log_snapshot(log_path)
+        freshness_color = RED if timer_active and log_stale else DIM
                 
         lines = [
             kv("Таймер (5 мин):", f"{GREEN}активен 🟢{NC}" if timer_active else f"{RED}отключен 🔴{NC}"),
             kv("Лог-файл:", f"{_bytes_auto(log_path.stat().st_size) if log_path.exists() else 'не создан'}"),
             kv("Последняя запись:", f"{DIM}{last_log_line}{NC}"),
+            kv("Актуальность:", f"{freshness_color}{log_freshness}{NC}"),
         ]
         panel("Управление Sync Agent", lines)
         
+        warp_auto = state.install.get("sync_warp_enabled", True)
+        limits_auto = state.install.get("sync_limits_enabled", True)
+        updates_auto = state.install.get("sync_updates_enabled", True)
+
         toggle_label = "⏹ Отключить Sync Agent" if timer_active else "▶ Включить Sync Agent"
         toggle_desc = "Остановить периодическую синхронизацию" if timer_active else "Проверять лимиты и сроки каждые 5 минут"
+        
         choice = menu([
             ("1", toggle_label, toggle_desc),
-            ("2", "⚡ Запустить сейчас", "Однократно проверить лимиты, сроки и WARP-списки"),
+            ("2", "⚡ Запустить сейчас", "Однократно проверить лимиты, сроки, WARP и обновление Sing-Box"),
             ("3", "📋 Показать лог", "Последние 30 строк sync-agent.log"),
+            ("-", "", ""),
+            ("4", f"🔄 Автообновление списков WARP: {GREEN}[ВКЛ]{NC}" if warp_auto else f"🔄 Автообновление списков WARP: {RED}[ВЫКЛ]{NC}",
+             "Раз в 24 часа скачивать свежие правила WARP"),
+            ("5", f"👥 Автопроверка лимитов: {GREEN}[ВКЛ]{NC}" if limits_auto else f"👥 Автопроверка лимитов: {RED}[ВЫКЛ]{NC}",
+             "Блокировать пользователей при превышении трафика/TTL"),
+            ("6", f"🆙 Автопроверка обновлений ядра: {GREEN}[ВКЛ]{NC}" if updates_auto else f"🆙 Автопроверка обновлений ядра: {RED}[ВЫКЛ]{NC}",
+             "Раз в 24 часа проверять наличие обновлений Sing-Box"),
             ("0", "↩ Назад", "")
         ], "SYNC AGENT")
         
@@ -2759,13 +2830,31 @@ WantedBy=timers.target
             info("Запуск ручной синхронизации...")
             try:
                 from hydra.services.sync_agent import run_sync
-                run_sync()
-                success("Синхронизация успешно выполнена")
+                ok, message = run_sync(
+                    force_update_check=True,
+                    force_all_checks=True,
+                )
+                if ok:
+                    success("Синхронизация успешно выполнена")
+                else:
+                    warn(f"Синхронизация завершена с ошибками: {message}")
             except Exception as e:
                 error(f"Ошибка при синхронизации: {e}")
             prompt("Нажмите Enter")
         elif choice == "3":
             _show_log_file("Sync Agent", str(log_path), 30)
+        elif choice == "4":
+            state, _ = update_state(
+                lambda latest: latest.install.__setitem__("sync_warp_enabled", not warp_auto)
+            )
+        elif choice == "5":
+            state, _ = update_state(
+                lambda latest: latest.install.__setitem__("sync_limits_enabled", not limits_auto)
+            )
+        elif choice == "6":
+            state, _ = update_state(
+                lambda latest: latest.install.__setitem__("sync_updates_enabled", not updates_auto)
+            )
 
 
 def _menu_clash_api(state: AppState):
@@ -2803,7 +2892,7 @@ def _menu_clash_api(state: AppState):
                     lambda latest: setattr(latest.network, "clash_api_enabled", enabled_status)
                 )
                 apply_config(state)
-                error("Не удалось применить настройку; прежнее состояние восстановлено")
+                error(_apply_error_text("Не удалось применить настройку; прежнее состояние восстановлено"))
             prompt("Нажмите Enter")
 
 
@@ -2979,7 +3068,7 @@ def _menu_amneziawg(state: AppState, p):
                         if orchestrator.enable(state, p.meta.name):
                             success("Протокол включён и применён")
                         else:
-                            error("Ошибка применения конфигурации")
+                            error(_apply_error_text())
                     except Exception as e:
                         error(f"Ошибка активации протокола: {e}")
                 else:
@@ -2988,13 +3077,13 @@ def _menu_amneziawg(state: AppState, p):
                 if orchestrator.disable(state, p.meta.name):
                     success("Протокол выключен")
                 else:
-                    error("Ошибка применения конфигурации")
+                    error(_apply_error_text())
             else:
                 try:
                     if orchestrator.enable(state, p.meta.name):
                         success("Протокол включён")
                     else:
-                        error("Ошибка применения конфигурации")
+                        error(_apply_error_text())
                 except Exception as e:
                     error(f"Ошибка активации протокола: {e}")
             prompt("Нажмите Enter")
@@ -3197,7 +3286,7 @@ def _menu_mieru(state: AppState, p):
                         if orchestrator.enable(state, p.meta.name):
                             success("Протокол включён и применён")
                         else:
-                            error("Ошибка применения конфигурации")
+                            error(_apply_error_text())
                     except Exception as e:
                         error(f"Ошибка активации протокола: {e}")
                 else:
@@ -3206,13 +3295,13 @@ def _menu_mieru(state: AppState, p):
                 if orchestrator.disable(state, p.meta.name):
                     success("Протокол выключен")
                 else:
-                    error("Ошибка применения конфигурации")
+                    error(_apply_error_text())
             else:
                 try:
                     if orchestrator.enable(state, p.meta.name):
                         success("Протокол включён")
                     else:
-                        error("Ошибка применения конфигурации")
+                        error(_apply_error_text())
                 except Exception as e:
                     error(f"Ошибка активации протокола: {e}")
             prompt("Нажмите Enter")
@@ -3278,7 +3367,7 @@ def _menu_mieru_obfuscation(state: AppState, p):
                 if p.set_preset(state, preset_name):
                     success(f"Пресет {preset_name} успешно применён!")
                 else:
-                    error("Не удалось применить пресет")
+                    error(_apply_error_text("Не удалось применить пресет"))
                 prompt("Нажмите Enter")
 
 
@@ -3340,7 +3429,7 @@ def _menu_anytls(state: AppState, p):
                         if orchestrator.enable(state, p.meta.name):
                             success("Протокол включён и применён")
                         else:
-                            error("Ошибка применения конфигурации")
+                            error(_apply_error_text())
                     except Exception as e:
                         error(f"Ошибка активации протокола: {e}")
                 else:
@@ -3349,13 +3438,13 @@ def _menu_anytls(state: AppState, p):
                 if orchestrator.disable(state, p.meta.name):
                     success("Протокол выключен")
                 else:
-                    error("Ошибка применения конфигурации")
+                    error(_apply_error_text())
             else:
                 try:
                     if orchestrator.enable(state, p.meta.name):
                         success("Протокол включён")
                     else:
-                        error("Ошибка применения конфигурации")
+                        error(_apply_error_text())
                 except Exception as e:
                     error(f"Ошибка активации протокола: {e}")
             prompt("Нажмите Enter")
@@ -3422,7 +3511,7 @@ def _menu_anytls_obfuscation(state: AppState, p):
                 if p.set_preset(state, preset_name):
                     success(f"Пресет {preset_name} успешно применён!")
                 else:
-                    error("Не удалось применить пресет")
+                    error(_apply_error_text("Не удалось применить пресет"))
                 prompt("Нажмите Enter")
 
 
@@ -3490,7 +3579,7 @@ def _menu_trusttunnel(state: AppState, p):
                         if orchestrator.enable(state, p.meta.name):
                             success("Протокол включён и применён")
                         else:
-                            error("Ошибка применения конфигурации")
+                            error(_apply_error_text())
                     except Exception as e:
                         error(f"Ошибка активации протокола: {e}")
                 else:
@@ -3499,13 +3588,13 @@ def _menu_trusttunnel(state: AppState, p):
                 if orchestrator.disable(state, p.meta.name):
                     success("Протокол выключен")
                 else:
-                    error("Ошибка применения конфигурации")
+                    error(_apply_error_text())
             else:
                 try:
                     if orchestrator.enable(state, p.meta.name):
                         success("Протокол включён")
                     else:
-                        error("Ошибка применения конфигурации")
+                        error(_apply_error_text())
                 except Exception as e:
                     error(f"Ошибка активации протокола: {e}")
             prompt("Нажмите Enter")
@@ -3581,7 +3670,7 @@ def _awg_generate_wizard_menu(state: AppState, p):
                 success("Параметры успешно применены!")
                 info("Клиенты автоматически получат новые настройки при обновлении подписки.")
             else:
-                error("Ошибка применения параметров.")
+                error(_apply_error_text("Ошибка применения параметров"))
             prompt("Нажмите Enter")
 
 

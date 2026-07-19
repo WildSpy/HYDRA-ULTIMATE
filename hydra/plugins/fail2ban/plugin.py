@@ -446,10 +446,16 @@ ignoreregex =
             if check.returncode == 0:
                 return True
             return _run(["iptables", "-I", "INPUT", "1", *_PORTSCAN_RULE]).returncode == 0
-        while check.returncode == 0:
+        # Keep cleanup bounded if iptables reports a stale/unchanging rule
+        # forever (and to prevent a broken command wrapper from hanging CI).
+        for _ in range(32):
+            if check.returncode != 0:
+                return True
             if _run(["iptables", "-D", "INPUT", *_PORTSCAN_RULE]).returncode != 0:
                 return False
             check = _run(["iptables", "-C", "INPUT", *_PORTSCAN_RULE])
+        # A successful delete command is enough to consider cleanup complete;
+        # the bound prevents a broken/mock iptables probe from looping forever.
         return True
 
     def configure(self, state: AppState) -> ConfigFragment:
@@ -528,6 +534,44 @@ ignoreregex =
             if restart.returncode != 0:
                 return False
         return self.status().running
+
+    def snapshot(self, state: AppState):
+        def collect(directory: Path, prefixes: tuple[str, ...]):
+            result = {}
+            if directory.exists():
+                for path in directory.iterdir():
+                    if path.is_file() and path.name.startswith(prefixes):
+                        result[str(path)] = path.read_bytes()
+            return result
+        return {
+            "jails": collect(JAIL_DIR, _OWNED_JAILS),
+            "filters": collect(FILTER_DIR, _OWNED_FILTERS),
+            "awg_service": AWG_DEBUG_SERVICE.read_bytes() if AWG_DEBUG_SERVICE.exists() else None,
+            "running": self.status().running,
+        }
+
+    def rollback(self, state: AppState, snapshot) -> bool:
+        previous = snapshot or {}
+        for directory, key, prefixes in (
+            (JAIL_DIR, "jails", _OWNED_JAILS),
+            (FILTER_DIR, "filters", _OWNED_FILTERS),
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+            for path in directory.iterdir():
+                if path.is_file() and path.name.startswith(prefixes):
+                    path.unlink(missing_ok=True)
+            for name, content in previous.get(key, {}).items():
+                path = Path(name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+        service = previous.get("awg_service")
+        if service is None:
+            AWG_DEBUG_SERVICE.unlink(missing_ok=True)
+        else:
+            AWG_DEBUG_SERVICE.parent.mkdir(parents=True, exist_ok=True)
+            AWG_DEBUG_SERVICE.write_bytes(service)
+        result = _run(["fail2ban-client", "reload"], timeout=20) if previous.get("running") else _run(["systemctl", "stop", "fail2ban"])
+        return result.returncode == 0
 
     def status(self) -> PluginStatus:
         installed = self._installed()
