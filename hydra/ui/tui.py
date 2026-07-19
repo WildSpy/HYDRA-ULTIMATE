@@ -22,7 +22,7 @@ except ImportError:
 
 def _detect_colors() -> dict:
     keys = ("RED", "GREEN", "YELLOW", "CYAN", "BLUE", "MAGENTA",
-            "BOLD", "DIM", "WHITE", "NC")
+            "BOLD", "DIM", "WHITE", "TEXT", "NC")
     if not sys.stdout.isatty():
         return {k: "" for k in keys}
 
@@ -31,22 +31,25 @@ def _detect_colors() -> dict:
         return {
             "RED": "\033[0;31m", "GREEN": "\033[0;32m", "YELLOW": "\033[0;33m",
             "CYAN": "\033[0;34m", "BLUE": "\033[0;35m", "MAGENTA": "\033[0;35m",
-            "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[0;30m", "NC": "\033[0m",
+            "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[0;30m",
+            "TEXT": "\033[0;30m", "NC": "\033[0m",
         }
     return {
         "RED": "\033[0;31m", "GREEN": "\033[0;32m", "YELLOW": "\033[1;33m",
         "CYAN": "\033[0;36m", "BLUE": "\033[0;34m", "MAGENTA": "\033[0;35m",
-        "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[1;37m", "NC": "\033[0m",
+        "BOLD": "\033[1m", "DIM": "\033[2m", "WHITE": "\033[1;37m",
+        "TEXT": "\033[0;37m", "NC": "\033[0m",
     }
 
 C = _detect_colors()
 RED = C["RED"]; GREEN = C["GREEN"]; YELLOW = C["YELLOW"]; CYAN = C["CYAN"]
 BLUE = C["BLUE"]; MAGENTA = C["MAGENTA"]; BOLD = C["BOLD"]; DIM = C["DIM"]
 WHITE = C["WHITE"]; NC = C["NC"]
+TEXT = C["TEXT"]
 
 TERM_WIDTH = shutil.get_terminal_size().columns
 PANEL_W = min(TERM_WIDTH - 4, 78)
-INDENT = "  "
+INDENT = " " * max(2, (TERM_WIDTH - PANEL_W - 2) // 2)
 
 
 def _strip(s: str) -> str:
@@ -168,7 +171,7 @@ def title(text: str):
 
 def kv(label: str, value: str, label_w: int = 16) -> str:
     """Строка «ключ — значение» для панелей."""
-    return f"  {WHITE}{label:<{label_w}}{NC} {value}"
+    return f"  {TEXT}{label:<{label_w}}{NC} {value}"
 
 
 def panel(title_text: str, lines: list[str]):
@@ -347,6 +350,8 @@ def dashboard_menu(
     print(f"{INDENT}{CYAN}╔{'═' * inner}╗{NC}")
 
     if banner:
+        import textwrap
+        banner = textwrap.dedent(banner)
         print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
         for raw_line in banner.splitlines():
             if not raw_line.strip():
@@ -385,14 +390,14 @@ def dashboard_menu(
         if key == "-":
             print(f"{INDENT}{CYAN}╠{'═' * inner}╣{NC}")
             continue
-        line = f"  {_menu_key(key)}  {WHITE}{BOLD}{label}{NC}"
+        line = f"  {_menu_key(key)}  {TEXT}{label}{NC}"
         line_fit, line_w = _fit_line(line, inner - 2)
         print(f"{INDENT}{CYAN}║{NC} {line_fit}{' ' * (inner - 2 - line_w)} {CYAN}║{NC}")
         if desc:
             import textwrap
             for paragraph in desc.split("\n"):
                 for wrapped in textwrap.wrap(paragraph, width=max(20, inner - 9)) or [""]:
-                    dline = f"       {WHITE}{DIM}{wrapped}{NC}"
+                    dline = f"       {TEXT}{DIM}{wrapped}{NC}"
                     dline_fit, dline_w = _fit_line(dline, inner - 2)
                     print(f"{INDENT}{CYAN}║{NC} {dline_fit}{' ' * (inner - 2 - dline_w)} {CYAN}║{NC}")
 

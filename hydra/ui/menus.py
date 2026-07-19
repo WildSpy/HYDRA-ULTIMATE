@@ -46,7 +46,7 @@ from hydra.services.traffic import (
 from hydra.ui.tui import (
     clear, title, info, success, warn, error, menu, prompt, panel, kv,
     confirm, _bytes_auto, _bar, _ok,
-    BANNER, GREEN, CYAN, YELLOW, RED, BOLD, DIM, WHITE, NC,
+    BANNER, GREEN, CYAN, YELLOW, RED, BOLD, DIM, WHITE, TEXT, NC,
     PANEL_W, dashboard_menu,
 )
 from hydra.ui.protocol_ui import (
@@ -258,7 +258,7 @@ def _sys_info(state: AppState | None = None) -> list[str]:
         kv("🔒 DNS", f"{GREEN}{dns_display}{NC}"),
         kv("⏱ Время работы", uptime_str),
         "",
-        f"  {WHITE}CPU{NC}  {usage(cpu_pct)}     {WHITE}RAM{NC}  {usage(mem_pct)}     {WHITE}Диск{NC}  {usage(disk_pct)}",
+        f"  {TEXT}CPU{NC}  {usage(cpu_pct)}     {TEXT}RAM{NC}  {usage(mem_pct)}     {TEXT}Диск{NC}  {usage(disk_pct)}",
     ]
 
 
@@ -477,8 +477,8 @@ def main_menu(state: AppState):
             [
                 ("СОСТОЯНИЕ УЗЛА", node_lines),
                 ("СЛУЖБЫ", [
-                    f"  🐍 {WHITE}Протоколы{NC}       {transport_status}       👥 {WHITE}Пользователи{NC}   {users_status}",
-                    f"  🛡️  {WHITE}Безопасность{NC}   {security_status}       🌐 {WHITE}WARP{NC}            {warp_status}",
+                    f"  🐍 {TEXT}Протоколы{NC}       {transport_status}       👥 {TEXT}Пользователи{NC}   {users_status}",
+                    f"  🛡️  {TEXT}Безопасность{NC}   {security_status}       🌐 {TEXT}WARP{NC}            {warp_status}",
                 ]),
                 ("ГИДРА СОВЕТУЕТ", [f"💬 {HYDRA_SAYING}"]),
             ],
