@@ -60,13 +60,20 @@ def _char_width(char: str) -> int:
     code = ord(char)
     if code == 0xfe0f:
         return 0
+    # Problematic characters that render as 1-cell in typical terminal fonts
+    if code in {
+        0x1f7e2, # 🟢
+        0x1f534, # 🔴
+        0x23f1,  # ⏱
+        0x1f6e1, # 🛡
+        0x2699,  # ⚙
+    }:
+        return 1
     # Common 2-cell emojis in standard BMP
     if code in {
         0x274c,  # ❌
         0x2705,  # ✅
         0x26a1,  # ⚡
-        0x2699,  # ⚙
-        0x23f1,  # ⏱
         0x1f4ca, # 📊
         0x1f310, # 🌐
     }:
@@ -375,7 +382,7 @@ def dashboard_menu(
 
     for section_title, lines in sections:
         title_fit, title_w = _fit_line(section_title, inner - 4)
-        print(f"{INDENT}{CYAN}║{NC} {BOLD}{CYAN}{title_fit}{NC}{' ' * (inner - 3 - title_w)} {CYAN}║{NC}")
+        print(f"{INDENT}{CYAN}║{NC} {BOLD}{CYAN}{title_fit}{NC}{' ' * (inner - 2 - title_w)} {CYAN}║{NC}")
         print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
         for line in lines:
             line_fit, line_w = _fit_line(line, inner - 2)
@@ -385,7 +392,7 @@ def dashboard_menu(
 
     if options_header:
         title_fit, title_w = _fit_line(options_header, inner - 4)
-        print(f"{INDENT}{CYAN}║{NC} {BOLD}{CYAN}{title_fit}{NC}{' ' * (inner - 3 - title_w)} {CYAN}║{NC}")
+        print(f"{INDENT}{CYAN}║{NC} {BOLD}{CYAN}{title_fit}{NC}{' ' * (inner - 2 - title_w)} {CYAN}║{NC}")
         print(f"{INDENT}{CYAN}║{NC}{' ' * inner}{CYAN}║{NC}")
 
     for key, label, desc in options:
