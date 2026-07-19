@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hydra-ultimate"
+dynamic = ["version"]
+description = "Multi-protocol proxy and routing orchestrator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+dependencies = [
+    "python-telegram-bot[job-queue]==22.8",
+    "qrcode==8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.15.22",
+    "pip-audit==2.10.1",
+]
+
+[project.scripts]
+hydra = "hydra.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hydra*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "hydra.__version__"}
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = ["scratch"]
+
+[tool.ruff.lint]
+# Start with correctness checks that can be enforced without a repository-wide
+# formatting rewrite. More style rules can be enabled incrementally.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"

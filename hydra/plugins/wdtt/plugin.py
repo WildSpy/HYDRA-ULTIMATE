@@ -49,6 +49,7 @@ class WdttPlugin(BasePlugin):
         category=PluginCategory.TRANSPORT,
         version="2.0.0",
         needs_domain=False,
+        central_apply=False,
     )
 
     def __init__(self):

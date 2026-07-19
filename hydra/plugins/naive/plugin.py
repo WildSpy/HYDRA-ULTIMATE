@@ -934,11 +934,6 @@ class NaivePlugin(BasePlugin):
         download_ok = download_github_asset(GITHUB_REPO, f"caddy-linux-{arch}", binary)
 
         if not download_ok:
-            from hydra.utils.downloader import download
-            direct_url = f"https://github.com/{GITHUB_REPO}/releases/latest/download/caddy-linux-{arch}"
-            download_ok = download(direct_url, binary)
-
-        if not download_ok:
             return False
 
         if not verify_elf(binary):

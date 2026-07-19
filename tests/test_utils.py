@@ -99,6 +99,15 @@ class TestDeriveHexKey:
         assert len(key) == 64
         assert all(c in "0123456789abcdef" for c in key)
 
+    def test_master_key_changes_derivation_without_affecting_legacy_default(self, tmp_path):
+        master = tmp_path / "master.key"
+        master.write_bytes(b"k" * 32)
+        with patch.object(crypto, "MASTER_KEY_FILE", master):
+            protected = crypto.derive_hex_key("test", "seed")
+        with patch.object(crypto, "MASTER_KEY_FILE", tmp_path / "missing"):
+            legacy = crypto.derive_hex_key("test", "seed")
+        assert protected != legacy
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  downloader — verify_elf
@@ -123,6 +132,27 @@ class TestVerifyElf:
         """Несуществующий файл → False (не Exception)."""
         from hydra.utils import downloader
         assert downloader.verify_elf(tmp_path / "nope") is False
+
+
+def test_verify_sha256_accepts_matching_file(tmp_path):
+    import hashlib
+    from hydra.utils import downloader
+
+    artifact = tmp_path / "artifact"
+    artifact.write_bytes(b"verified")
+    assert downloader.verify_sha256(artifact, hashlib.sha256(b"verified").hexdigest())
+
+
+def test_github_asset_fails_closed_without_digest(tmp_path):
+    from hydra.utils import downloader
+
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"assets":[{"name":"tool-linux","browser_download_url":"https://example.invalid/tool"}]}'
+    with patch.object(downloader.urllib.request, "urlopen", return_value=response), \
+         patch.object(downloader, "_allow_unverified", return_value=False), \
+         patch.object(downloader, "download") as download:
+        assert downloader.download_github_asset("owner/repo", "tool-linux", tmp_path / "tool") is False
+    download.assert_not_called()
 
 
 def test_extract_tarball_rejects_parent_traversal(tmp_path):

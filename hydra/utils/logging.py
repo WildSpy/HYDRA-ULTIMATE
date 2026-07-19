@@ -3,6 +3,7 @@ hydra/utils/logging.py — Логирование.
 """
 from pathlib import Path
 from datetime import datetime
+from hydra.utils.commands import redact_text
 
 LOG_DIR = Path("/var/log/hydra")
 LOG_FILE = LOG_DIR / "install.log"
@@ -14,7 +15,7 @@ def log(level: str, msg: str) -> None:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with LOG_FILE.open("a", encoding="utf-8") as f:
-            f.write(f"[{ts}] [{level}] {msg}\n")
+            f.write(f"[{ts}] [{level}] {redact_text(msg)}\n")
     except Exception:
         pass
 

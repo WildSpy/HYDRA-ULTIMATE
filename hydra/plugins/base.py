@@ -20,6 +20,7 @@ class PluginMeta:
     category: PluginCategory = PluginCategory.TRANSPORT
     version: str = "1.0.0"
     needs_domain: bool = False
+    central_apply: bool | None = None
 
 
 @dataclass

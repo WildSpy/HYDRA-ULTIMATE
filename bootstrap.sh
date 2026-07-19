@@ -32,6 +32,17 @@ step()  { echo -e "\n${BOLD}${CYAN}━━ $* ━━${NC}"; }
 
 on_error() {
     local code=$?
+    if [[ -n "${HYDRA_PREVIOUS_REV:-}" && -d "${INSTALL_DIR:-}/.git" ]]; then
+        warn "Возвращаю код HYDRA к предыдущей проверенной версии..."
+        git -C "$INSTALL_DIR" reset --hard "$HYDRA_PREVIOUS_REV" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${HYDRA_BACKUP_DIR:-}" && -d "$HYDRA_BACKUP_DIR/old" ]]; then
+        warn "Восстанавливаю предыдущий каталог HYDRA..."
+        if [[ -e "${INSTALL_DIR:-}" ]]; then
+            mv "$INSTALL_DIR" "$HYDRA_BACKUP_DIR/failed" || true
+        fi
+        mv "$HYDRA_BACKUP_DIR/old" "$INSTALL_DIR" || true
+    fi
     err "Установка прервана (строка ${BASH_LINENO[0]}, код ${code})."
     err "Подробный лог: /var/log/hydra/install.log"
     exit "$code"
@@ -116,6 +127,16 @@ if [[ "$PY_OK" != "1" ]]; then
 fi
 ok "Python $PY_VER: OK"
 
+# New installations get a private KDF secret. Existing state files retain the
+# legacy derivation so current client links and credentials do not rotate.
+if [[ ! -f /var/lib/hydra/state.json && ! -f /var/lib/hydra/master.key ]]; then
+    mkdir -p /var/lib/hydra
+    umask 077
+    python3 -c 'import secrets; open("/var/lib/hydra/master.key", "wb").write(secrets.token_bytes(32))'
+    chmod 600 /var/lib/hydra/master.key
+    umask 022
+fi
+
 # Дополнительные пакеты
 $PKG_INSTALL iptables iproute2 gnupg ca-certificates ufw
 
@@ -154,7 +175,8 @@ for a in data.get('assets', []):
         }
         ok "Проверка целостности Sing-Box: OK"
     else
-        warn "GitHub не предоставил digest для выбранного релиза Sing-Box"
+        err "GitHub не предоставил SHA-256 для Sing-Box; установка остановлена"
+        exit 1
     fi
     tar -xzf "$SB_TMP/sing-box.tar.gz" -C "$SB_TMP"
     SB_BIN=$(find "$SB_TMP" -type f -name sing-box -size +1M -print -quit)
@@ -173,6 +195,7 @@ step "[4/5] Загрузка HYDRA"
 INSTALL_DIR="/opt/hydra"
 REPO_URL="https://github.com/gr33nimax/HYDRA-ULTIMATE"
 BRANCH="main"
+HYDRA_REF="${HYDRA_REF:-$BRANCH}"
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
     info "Обновление репозитория..."
@@ -181,16 +204,20 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
         err "В $INSTALL_DIR есть локальные изменения; обновление остановлено, чтобы их не удалить."
         exit 1
     fi
-    git fetch --prune origin "$BRANCH"
-    git checkout -q "$BRANCH"
-    git reset --hard "origin/$BRANCH"
+    HYDRA_PREVIOUS_REV=$(git rev-parse HEAD)
+    git fetch --prune origin "$HYDRA_REF"
+    HYDRA_TARGET_REV=$(git rev-parse FETCH_HEAD)
+    git reset --hard "$HYDRA_TARGET_REV"
     ok "Репозиторий обновлён"
 elif [[ -d "$INSTALL_DIR" ]]; then
     info "Установка без git — принудительное обновление..."
     ARCHIVE="${REPO_URL}/archive/refs/heads/${BRANCH}.tar.gz"
     UPDATE_TMP=$(mktemp -d /tmp/hydra-update.XXXXXX)
+    HYDRA_BACKUP_DIR=$(mktemp -d /tmp/hydra-previous.XXXXXX)
+    mv "$INSTALL_DIR" "$HYDRA_BACKUP_DIR/old"
     curl -fsSL --connect-timeout 30 --retry 3 -o "$UPDATE_TMP/hydra.tar.gz" "$ARCHIVE"
     tar -xzf "$UPDATE_TMP/hydra.tar.gz" -C "$UPDATE_TMP"
+    mkdir -p "$INSTALL_DIR"
     cp -a "$UPDATE_TMP/HYDRA-ULTIMATE-${BRANCH}/." "$INSTALL_DIR/"
     rm -rf "$UPDATE_TMP"
     ok "Файлы обновлены"
@@ -219,7 +246,13 @@ info "Изолированное Python-окружение..."
 VENV_DIR="${INSTALL_DIR}/.venv"
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python" -m pip install --upgrade --quiet pip
-"$VENV_DIR/bin/python" -m pip install --quiet "python-telegram-bot[job-queue]" "qrcode"
+"$VENV_DIR/bin/python" -m pip install --quiet -r "${INSTALL_DIR}/requirements.lock"
+"$VENV_DIR/bin/python" -m compileall -q "${INSTALL_DIR}/main.py" "${INSTALL_DIR}/hydra"
+HYDRA_PREVIOUS_REV=""
+if [[ -n "${HYDRA_BACKUP_DIR:-}" ]]; then
+    rm -rf "$HYDRA_BACKUP_DIR"
+    HYDRA_BACKUP_DIR=""
+fi
 
 # ── Symlink ──────────────────────────────────────────────────────────────────
 chmod +x "${INSTALL_DIR}/main.py"
@@ -233,7 +266,8 @@ chmod 0755 /usr/local/bin/hydra
 step "[5/5] Готово"
 echo ""
 echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}${BOLD}     🐉 HYDRA v1.0 установлена!${NC}"
+HYDRA_VERSION=$("$VENV_DIR/bin/python" -c "from hydra import __version__; print(__version__)" 2>/dev/null || echo unknown)
+echo -e "${GREEN}${BOLD}     🐉 HYDRA v${HYDRA_VERSION} установлена!${NC}"
 echo -e "${GREEN}${BOLD}     Запуск: sudo python3 ${INSTALL_DIR}/main.py${NC}"
 echo -e "${GREEN}${BOLD}     Или:    sudo hydra${NC}"
 echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

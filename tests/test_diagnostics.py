@@ -6,7 +6,7 @@ import json
 import socket
 import ssl
 import urllib.error
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, call, mock_open, patch
 
 import pytest
 
@@ -67,7 +67,7 @@ class TestSocketAndPackageHelpers:
 
     def test_ensure_packages_skips_install_when_present(self):
         with patch.object(diagnostics.shutil, "which", return_value="/usr/bin/tool"), patch.object(
-            diagnostics.subprocess, "run"
+            diagnostics, "run_command"
         ) as run:
             assert diagnostics.ensure_packages(["dnsutils", "sysbench"]) is True
         run.assert_not_called()
@@ -77,12 +77,15 @@ class TestSocketAndPackageHelpers:
         completed = MagicMock(returncode=returncode)
         with patch.object(diagnostics.shutil, "which", return_value=None), patch.object(
             diagnostics, "confirm", return_value=confirm_install
-        ), patch.object(diagnostics.subprocess, "run", return_value=completed) as run, patch.object(
+        ), patch.object(diagnostics, "run_command", return_value=completed) as run, patch.object(
             diagnostics, "prompt"
         ):
             assert diagnostics.ensure_packages(["dnsutils"]) is expected
         if confirm_install:
-            run.assert_called_once_with("apt-get update && apt-get install -y dnsutils", shell=True)
+            assert run.call_args_list == [
+                call(["apt-get", "update"], timeout=300),
+                call(["apt-get", "install", "-y", "dnsutils"], timeout=300),
+            ]
         else:
             run.assert_not_called()
 
@@ -107,9 +110,7 @@ class TestCommandRunners:
         with patch.object(diagnostics.subprocess, "Popen", return_value=process) as popen:
             assert diagnostics.run_with_spinner("work", "echo ok") == "result\n"
         popen.assert_called_once_with(
-            "echo ok",
-            shell=True,
-            executable="/bin/bash",
+            ["echo", "ok"],
             stdout=diagnostics.subprocess.PIPE,
             stderr=diagnostics.subprocess.DEVNULL,
             text=True,
@@ -133,10 +134,10 @@ class TestCommandRunners:
         with pytest.raises(ValueError, match="boom"):
             diagnostics.run_function_with_spinner("fail", fail)
 
-    def test_run_direct_cmd_uses_bash(self):
+    def test_run_direct_cmd_uses_argv_without_shell(self):
         with patch.object(diagnostics, "clear"), patch.object(diagnostics.subprocess, "run") as run:
             diagnostics.run_direct_cmd("title", "tool --flag")
-        run.assert_called_once_with("tool --flag", shell=True, executable="/bin/bash")
+        run.assert_called_once_with(["tool", "--flag"], timeout=diagnostics.DEFAULT_TIMEOUT, check=False)
 
 
 class TestHttpAndAddressHelpers:

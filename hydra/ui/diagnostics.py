@@ -12,10 +12,12 @@ import urllib.request
 import urllib.error
 import concurrent.futures
 import threading
+import shlex
 from urllib.parse import urlparse
 from pathlib import Path
 
 from hydra.core.state import AppState
+from hydra.utils.commands import CommandError, DEFAULT_TIMEOUT, run as run_command
 from hydra.ui.tui import (
     clear, title, info, success, warn, error, menu, prompt, panel, kv,
     confirm, _bytes_auto, _bar, _ok,
@@ -137,8 +139,14 @@ def ensure_packages(pkgs: list[str]) -> bool:
     warn(f"Для выполнения этого теста требуются утилиты: {', '.join(missing)}")
     if confirm("Установить их сейчас?", default=True):
         info("Обновляю список пакетов и устанавливаю зависимости...")
-        r = subprocess.run(f"apt-get update && apt-get install -y {' '.join(missing)}", shell=True)
-        if r.returncode == 0:
+        try:
+            update = run_command(["apt-get", "update"], timeout=300)
+            install = run_command(["apt-get", "install", "-y", *missing], timeout=300)
+        except CommandError:
+            error("Не удалось запустить менеджер пакетов")
+            prompt("Нажмите Enter для продолжения...")
+            return False
+        if update.returncode == 0 and install.returncode == 0:
             success("Зависимости успешно установлены")
             return True
         else:
@@ -148,12 +156,18 @@ def ensure_packages(pkgs: list[str]) -> bool:
     return False
 
 
-def run_with_spinner(title_text: str, cmd: str) -> str:
+def _command_argv(cmd: str | list[str] | tuple[str, ...]) -> list[str]:
+    """Convert legacy command strings to argv without invoking a shell."""
+    argv = [str(item) for item in cmd] if not isinstance(cmd, str) else shlex.split(cmd)
+    if not argv:
+        raise ValueError("Пустая системная команда")
+    return argv
+
+
+def run_with_spinner(title_text: str, cmd: str | list[str] | tuple[str, ...]) -> str:
     """Запускает системную команду с плавной TUI-анимацией загрузки (spinner) и возвращает stdout."""
     process = subprocess.Popen(
-        cmd,
-        shell=True,
-        executable="/bin/bash",
+        _command_argv(cmd),
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
@@ -161,8 +175,13 @@ def run_with_spinner(title_text: str, cmd: str) -> str:
     
     spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     idx = 0
+    deadline = time.monotonic() + DEFAULT_TIMEOUT
     try:
         while process.poll() is None:
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.wait()
+                raise TimeoutError(f"Команда превысила таймаут {DEFAULT_TIMEOUT} секунд")
             sys.stdout.write(f"\r  {CYAN}[{spinner[idx]}]{NC} {title_text}...")
             sys.stdout.flush()
             idx = (idx + 1) % len(spinner)
@@ -220,16 +239,14 @@ def run_function_with_spinner(title_text: str, func, *args, **kwargs):
     return result[0]
 
 
-def run_streaming_cmd(title_text: str, cmd: str):
+def run_streaming_cmd(title_text: str, cmd: str | list[str] | tuple[str, ...]):
     """Стримит вывод команды в реальном времени, фильтруя шум и оборачивая вывод в рамки HYDRA."""
     print(f"\n  {CYAN}╔{'═' * 76}╗{NC}")
     print(f"  {CYAN}║{NC} {BOLD}{title_text:<74}{NC} {CYAN}║{NC}")
     print(f"  {CYAN}╠{'═' * 76}╣{NC}")
     
     process = subprocess.Popen(
-        cmd,
-        shell=True,
-        executable="/bin/bash",
+        _command_argv(cmd),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -289,13 +306,13 @@ def run_streaming_cmd(title_text: str, cmd: str):
         print(f"\n  {RED}[!] Выполнение прервано.{NC}")
         raise KeyboardInterrupt
         
-    process.wait()
+    process.wait(timeout=DEFAULT_TIMEOUT)
     print(f"  {CYAN}╚{'═' * 76}╝{NC}")
     print()
     success("Тест завершен.")
 
 
-def run_direct_cmd(title_text: str, cmd: str):
+def run_direct_cmd(title_text: str, cmd: str | list[str] | tuple[str, ...]):
     """Очищает экран, выводит заголовок HYDRA и запускает команду напрямую (для поддержки интерактивных TUI-меню)."""
     clear()
     print(f"\n  {CYAN}╔{'═' * 76}╗{NC}")
@@ -303,7 +320,7 @@ def run_direct_cmd(title_text: str, cmd: str):
     print(f"  {CYAN}╚{'═' * 76}╝{NC}\n")
     
     try:
-        subprocess.run(cmd, shell=True, executable="/bin/bash")
+        subprocess.run(_command_argv(cmd), timeout=DEFAULT_TIMEOUT, check=False)
     except KeyboardInterrupt:
         print(f"\n  {RED}[!] Выполнение прервано.{NC}")
 

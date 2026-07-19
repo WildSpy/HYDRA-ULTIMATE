@@ -5,7 +5,25 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import os
 import secrets
+from pathlib import Path
+
+MASTER_KEY_FILE = Path(os.environ.get("HYDRA_MASTER_KEY_FILE", "/var/lib/hydra/master.key"))
+
+
+def _master_key() -> bytes | None:
+    """Return the installation secret when one exists.
+
+    Existing installations without this file keep legacy derived credentials;
+    bootstrap creates it only for fresh installations.
+    """
+    try:
+        key = MASTER_KEY_FILE.read_bytes()
+    except OSError:
+        return None
+    return key if len(key) >= 32 else None
 
 # Без неоднозначных символов (0/O, 1/l/I) — для ручного ввода с телефона.
 _PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
@@ -26,7 +44,9 @@ def derive_key(purpose: str, seed: str) -> str:
 
     Используется AWG и другими плагинами для воспроизводимых per-user кредов.
     """
-    digest = hashlib.sha256(f"{purpose}|{seed}".encode()).digest()
+    payload = f"{purpose}|{seed}".encode()
+    key = _master_key()
+    digest = hmac.new(key, payload, hashlib.sha256).digest() if key else hashlib.sha256(payload).digest()
     return base64.b64encode(digest).decode()
 
 
@@ -35,4 +55,6 @@ def derive_hex_key(purpose: str, seed: str) -> str:
 
     Используется NaiveProxy для URL-безопасных учетных данных без спецсимволов.
     """
-    return hashlib.sha256(f"{purpose}|{seed}".encode()).hexdigest()
+    payload = f"{purpose}|{seed}".encode()
+    key = _master_key()
+    return hmac.new(key, payload, hashlib.sha256).hexdigest() if key else hashlib.sha256(payload).hexdigest()

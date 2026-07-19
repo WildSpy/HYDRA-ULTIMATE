@@ -38,6 +38,9 @@ def check_python() -> None:
 
 def main() -> None:
     """Главная точка входа."""
+    if len(sys.argv) > 1:
+        from hydra.cli import main as cli_main
+        raise SystemExit(cli_main(sys.argv[1:]))
     check_root()
     check_python()
 

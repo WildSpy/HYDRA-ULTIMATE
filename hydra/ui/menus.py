@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hydra.core.state import (
-    AppState, User, save_state, load_state, update_state, find_user, get_protocol,
+    AppState, User, PluginState, save_state, load_state, update_state, find_user, get_protocol,
 )
 from hydra.core.singbox import (
     install as install_singbox,

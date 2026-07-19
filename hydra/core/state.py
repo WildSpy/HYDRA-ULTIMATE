@@ -245,6 +245,7 @@ def load_state() -> AppState:
 
 
 def _save_state_unlocked(state: AppState) -> None:
+    validate_state(state)
     data = _to_dict(state)
     if STATE_FILE.exists():
         shutil.copy2(STATE_FILE, STATE_FILE.with_suffix(".json.bak"))
@@ -305,6 +306,32 @@ def save_state(state: AppState) -> None:
             else:
                 state.install.pop("sync_config_pending", None)
         _save_state_unlocked(state)
+
+
+def validate_state(state: AppState) -> None:
+    """Validate semantic invariants before persisting or applying state."""
+    if state.version < 0:
+        raise ValueError("state version must be non-negative")
+    for user in state.users:
+        if not user.email or not isinstance(user.email, str) or "@" not in user.email:
+            raise ValueError(f"invalid user email: {user.email!r}")
+        if not user.uuid or not isinstance(user.uuid, str):
+            raise ValueError(f"invalid UUID for user {user.email}")
+        if user.traffic_limit_gb < 0 or user.traffic_used_bytes < 0:
+            raise ValueError(f"traffic counters cannot be negative for {user.email}")
+    ports = {
+        "network.tproxy_port": state.network.tproxy_port,
+        "network.clash_api_port": state.network.clash_api_port,
+        "network.dnscrypt_port": state.network.dnscrypt_port,
+    }
+    for name, port in ports.items():
+        if not isinstance(port, int) or not 0 <= port <= 65535:
+            raise ValueError(f"{name} must be between 0 and 65535")
+    for name, protocol in state.protocols.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(protocol.config, dict):
+            raise ValueError("protocol entries must have a name and object config")
+        if not isinstance(protocol.port, int) or not 0 <= protocol.port <= 65535:
+            raise ValueError(f"protocol {name} has an invalid port")
 
 
 def update_state(mutator: Callable[[AppState], T]) -> tuple[AppState, T]:

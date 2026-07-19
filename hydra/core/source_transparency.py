@@ -12,6 +12,7 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
+from hydra.utils.commands import DEFAULT_TIMEOUT
 
 
 NFT_TABLE = "hydra-caddy-source"
@@ -24,6 +25,7 @@ STATE_FILE = Path("/var/lib/hydra/caddy-source-state.json")
 
 
 def _run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
     return subprocess.run(command, capture_output=True, **kwargs)
 
 

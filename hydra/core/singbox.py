@@ -17,6 +17,7 @@ from typing import Optional
 
 from hydra.plugins.base import ConfigFragment
 from hydra.core.state import AppState, PluginState, load_state, save_state
+from hydra.utils.commands import redact_text
 
 SINGBOX_BIN = Path("/usr/local/bin/sing-box")
 SINGBOX_CONFIG = Path("/etc/sing-box/config.json")
@@ -49,7 +50,7 @@ def _log(level: str, msg: str) -> None:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         ts = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with LOG_FILE.open("a", encoding="utf-8") as f:
-            f.write(f"[{ts}] [{level}] {msg}\n")
+            f.write(f"[{ts}] [{level}] {redact_text(msg)}\n")
     except Exception:
         pass
 

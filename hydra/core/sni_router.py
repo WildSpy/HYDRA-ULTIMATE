@@ -10,6 +10,7 @@ import shutil
 import base64
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 from hydra.core.state import AppState
 
@@ -280,10 +281,25 @@ def _ensure_modern_go() -> bool:
     from hydra.utils.net import detect_arch
     arch = detect_arch()
     go_arch = arch if arch in ("amd64", "arm64") else "amd64"
-    go_url = f"https://go.dev/dl/go{GO_VERSION}.linux-{go_arch}.tar.gz"
+    go_filename = f"go{GO_VERSION}.linux-{go_arch}.tar.gz"
+    go_url = f"https://go.dev/dl/{go_filename}"
 
     from hydra.utils.downloader import download
-    if download(go_url, go_tar):
+    go_digest = None
+    try:
+        request = urllib.request.Request("https://go.dev/dl/?mode=json", headers={"User-Agent": "HYDRA"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            releases = json.loads(response.read())
+        for release in releases:
+            for file_info in release.get("files", []):
+                if file_info.get("filename") == go_filename:
+                    go_digest = file_info.get("sha256")
+                    break
+            if go_digest:
+                break
+    except (OSError, ValueError, TypeError):
+        go_digest = None
+    if go_digest and download(go_url, go_tar, sha256=go_digest):
         extract_root = Path(tempfile.mkdtemp(prefix="hydra-go-", dir="/tmp"))
         current_go = Path("/usr/local/go")
         backup_go = Path(f"/usr/local/go.hydra-previous-{os.getpid()}")
@@ -333,8 +349,8 @@ def install(state: AppState | None = None, *, force: bool = False) -> bool:
     print("  Installing Go compiler...")
     if not _ensure_modern_go():
         print("  Failed to install a modern Go compiler. Trying apt fallback...")
-        subprocess.run(["apt-get", "update"], capture_output=True)
-        subprocess.run(["apt-get", "install", "-y", "golang-go"], capture_output=True)
+        subprocess.run(["apt-get", "update"], capture_output=True, timeout=300)
+        subprocess.run(["apt-get", "install", "-y", "golang-go"], capture_output=True, timeout=300)
 
     print("  Installing xcaddy and building caddy-l4...")
     # Install xcaddy in a local path to avoid global permissions issues

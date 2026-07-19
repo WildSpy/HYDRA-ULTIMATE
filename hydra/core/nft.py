@@ -5,6 +5,7 @@ import subprocess
 import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from hydra.utils.commands import DEFAULT_TIMEOUT
 
 if TYPE_CHECKING:
     from hydra.plugins.base import ConfigFragment
@@ -56,6 +57,7 @@ def restore_tproxy(snapshot: TproxySnapshot) -> None:
 
 
 def _run_checked(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
     result = subprocess.run(cmd, capture_output=True, **kwargs)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else result.stderr

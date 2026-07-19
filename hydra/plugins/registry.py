@@ -41,9 +41,6 @@ _PLUGINS: list[BasePlugin] = [
 
 # WDTT remains on its legacy manager-controlled lifecycle by explicit product
 # decision.  All other plugins use the centralized configure/apply pipeline.
-_CENTRAL_APPLY_EXCLUSIONS = frozenset({"wdtt"})
-
-
 class PluginConfigurationError(RuntimeError):
     """An enabled plugin could not produce a valid configuration."""
 
@@ -51,6 +48,12 @@ class PluginConfigurationError(RuntimeError):
         super().__init__(f"Plugin {plugin_name} configuration failed: {cause}")
         self.plugin_name = plugin_name
         self.__cause__ = cause
+
+
+def _uses_central_apply(plugin: BasePlugin) -> bool:
+    """Read the capability flag while preserving legacy test/custom plugins."""
+    value = getattr(plugin.meta, "central_apply", None)
+    return plugin.meta.name != "wdtt" if value is None else value
 
 
 def all_plugins() -> list[BasePlugin]:
@@ -99,7 +102,7 @@ def apply_enabled(state: AppState) -> list[tuple[BasePlugin, object]]:
     """Apply the configuration prepared by every enabled plugin."""
     applied: list[tuple[BasePlugin, object]] = []
     for plugin in enabled(state):
-        if plugin.meta.name in _CENTRAL_APPLY_EXCLUSIONS:
+        if not _uses_central_apply(plugin):
             continue
         snapshot = None
         snapshot_created = False
@@ -167,7 +170,7 @@ def health_all(state: AppState) -> dict[str, str]:
     """Return failures for enabled plugins without making apply side effects."""
     failures: dict[str, str] = {}
     for plugin in enabled(state):
-        if plugin.meta.name in _CENTRAL_APPLY_EXCLUSIONS:
+        if not _uses_central_apply(plugin):
             continue
         try:
             healthy, detail = plugin.healthcheck()
